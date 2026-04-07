@@ -7,10 +7,10 @@ use CodeIgniter\HTTP\RequestInterface;
 use CodeIgniter\HTTP\ResponseInterface;
 
 /**
- * RoleFilter – periksa role/level user.
+ * RoleFilter – periksa role/kode_jabatan user.
  *
  * Contoh:
- *   ['filter' => 'role:1,2,3']      -> hanya level 1,2,3
+ *   ['filter' => 'role:1,2,3']      -> hanya kode_jabatan 1,2,3
  *   ['filter' => 'role:admin,user'] -> kompatibel role string
  */
 class RoleFilter implements FilterInterface
@@ -29,7 +29,11 @@ class RoleFilter implements FilterInterface
         }
 
         $role = (string) (session()->get('role') ?? '');
-        $level = session()->get('level');
+        $kodeJabatan = session()->get('kode_jabatan');
+        if ($kodeJabatan === null || $kodeJabatan === '') {
+            // Backward compatibility untuk sesi lama yang masih menyimpan key level.
+            $kodeJabatan = session()->get('level');
+        }
 
         $allowed = array_values(array_filter(
             array_map(static fn($arg) => trim((string) $arg), $arguments),
@@ -40,14 +44,14 @@ class RoleFilter implements FilterInterface
             return;
         }
 
-        $allowedLevels = [];
+        $allowedKodeJabatan = [];
         foreach ($allowed as $item) {
             if (ctype_digit($item)) {
-                $allowedLevels[] = (int) $item;
+                $allowedKodeJabatan[] = (int) $item;
             }
         }
 
-        if ($allowedLevels !== [] && $level !== null && $level !== '' && in_array((int) $level, $allowedLevels, true)) {
+        if ($allowedKodeJabatan !== [] && $kodeJabatan !== null && $kodeJabatan !== '' && in_array((int) $kodeJabatan, $allowedKodeJabatan, true)) {
             return;
         }
 
@@ -55,7 +59,7 @@ class RoleFilter implements FilterInterface
             return;
         }
 
-        if ($allowedLevels !== [] || $role !== '') {
+        if ($allowedKodeJabatan !== [] || $role !== '') {
             return redirect()->to(base_url('home'))
                 ->with('error', 'Anda tidak memiliki akses ke halaman tersebut.');
         }

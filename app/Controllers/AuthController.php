@@ -7,8 +7,9 @@ use Firebase\JWT\JWT;
 
 class AuthController extends BaseController
 {
-    private const LEVELS_ALLOWED = [1, 2, 3, 4, 5, 6, 7];
-    private const LEVELS_CRP_ACCESS = [1, 2, 3, 4, 5, 6];
+    private const KODE_JABATAN_ALLOWED = [1, 2, 3, 4, 5, 6, 7];
+    private const KODE_JABATAN_EDIT_ACCESS = [1, 2, 3, 4, 5, 6];
+    private const KODE_JABATAN_MONITOR_ACCESS = [1, 2, 3, 4, 5, 6, 7];
 
     protected M_Login $loginModel;
 
@@ -45,12 +46,19 @@ class AuthController extends BaseController
                 ->with('error', (string) ($authResult['message'] ?? 'Username atau password tidak valid.'));
         }
 
-        $level = (int) ($authResult['level'] ?? 0);
-
-        if (!in_array($level, self::LEVELS_ALLOWED, true)) {
+        $kodeJabatanRaw = $authResult['kode_jabatan'] ?? null;
+        if (!is_numeric($kodeJabatanRaw)) {
             return redirect()->back()
                 ->withInput()
-                ->with('error', 'Level akun tidak diizinkan untuk mengakses aplikasi ini.');
+                ->with('error', 'Kode jabatan tidak ditemukan. Hubungi administrator.');
+        }
+
+        $kodeJabatan = (int) $kodeJabatanRaw;
+
+        if (!in_array($kodeJabatan, self::KODE_JABATAN_ALLOWED, true)) {
+            return redirect()->back()
+                ->withInput()
+                ->with('error', 'Kode jabatan akun tidak diizinkan untuk mengakses aplikasi ini.');
         }
 
         $apiUsername = trim((string) ($authResult['username'] ?? $username));
@@ -60,16 +68,22 @@ class AuthController extends BaseController
             $name = $apiUsername;
         }
 
-        $canAccessCrp = in_array($level, self::LEVELS_CRP_ACCESS, true);
+        $canEditCrp = in_array($kodeJabatan, self::KODE_JABATAN_EDIT_ACCESS, true);
+        $canAccessMonitorUser = in_array($kodeJabatan, self::KODE_JABATAN_MONITOR_ACCESS, true);
+        $jabatan = trim((string) ($authResult['jabatan'] ?? ''));
+        if ($jabatan === '') {
+            $jabatan = 'Pengguna';
+        }
         $sessionToken = $this->createSessionToken([
             'npk'            => $authResult['npk'] ?? null,
             'nama'           => $name,
-            'kode_jabatan'   => $authResult['kode_jabatan'] ?? null,
+            'jabatan'        => $jabatan,
+            'kode_jabatan'   => $kodeJabatan,
             'username'       => $apiUsername,
             'departement'    => $authResult['departement'] ?? null,
             'id_departement' => $authResult['id_departement'] ?? null,
             'is_login'       => $authResult['is_login'] ?? true,
-            'level'          => $level,
+            'level'          => $kodeJabatan,
         ]);
 
         if (!($sessionToken['success'] ?? false)) {
@@ -87,11 +101,14 @@ class AuthController extends BaseController
             'username'       => $apiUsername,
             'name'           => $name,
             'nama'           => $name,
-            'level'          => $level,
-            'role'           => $canAccessCrp ? 'level_1_6' : 'level_7',
-            'can_access_crp' => $canAccessCrp,
+            'jabatan'        => $jabatan,
+            'level'          => $kodeJabatan,
+            'role'           => $canEditCrp ? 'level_1_6' : 'level_7',
+            'can_access_crp' => $canEditCrp,
+            'can_edit_crp'   => $canEditCrp,
+            'can_access_monitor_user' => $canAccessMonitorUser,
             'npk'            => $authResult['npk'] ?? null,
-            'kode_jabatan'   => $authResult['kode_jabatan'] ?? null,
+            'kode_jabatan'   => $kodeJabatan,
             'departement'    => $authResult['departement'] ?? null,
             'id_departement' => $authResult['id_departement'] ?? null,
             'api_is_login'   => $authResult['is_login'] ?? null,
@@ -122,6 +139,7 @@ class AuthController extends BaseController
         $payload = [
             'npk'            => $claims['npk'] ?? null,
             'nama'           => $claims['nama'] ?? null,
+            'jabatan'        => $claims['jabatan'] ?? null,
             'kode_jabatan'   => $claims['kode_jabatan'] ?? null,
             'username'       => $claims['username'] ?? null,
             'departement'    => $claims['departement'] ?? null,

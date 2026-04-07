@@ -30,30 +30,162 @@ class MonitorUserController extends BaseController
 
 	/**
 	 * Endpoint JSON utama monitor user.
-	 * Hanya mengembalikan data part yang sudah diberi aksi control oleh admin.
+	 * User produksi hanya melihat item yang memerlukan control.
+	 * Admin dapat memilih filter alert/all, default tetap alert.
 	 *
 	 * Query:
 	 * - month (opsional) format YYYY-MM
+	 * - mode (opsional): alert | all
 	 */
 	public function getData()
 	{
 		@set_time_limit(300);
 
 		[$year, $month] = $this->resolvePeriod();
-		$result = array_values(array_filter(
-			$this->buildMonitorData($year, $month),
-			static fn(array $row): bool => !empty($row['CONTROLLED'])
-		));
+		$canViewAll = $this->canViewAllMonitorData();
+		$mode = $this->resolveMonitorFilter($canViewAll);
+
+		$result = $this->buildMonitorData($year, $month);
+
+		if ($mode !== 'all') {
+			$result = array_values(array_filter(
+				$result,
+				static fn(array $row): bool => ($row['KETERANGAN'] ?? '') === 'Harap lebih hemat'
+			));
+		}
+
+		$result = $this->reindexRowNumbers($result);
 		$pagination = $this->resolvePagination();
 		$pagedData = $this->paginateRows($result, $pagination['page'], $pagination['per_page'], $pagination['is_all']);
 
 		return $this->respond([
-			'status' => 'success',
-			'data'   => $pagedData['data'],
-			'year'   => $year,
-			'month'  => $month,
-			'pagination' => $pagedData['meta'],
+			'status'      => 'success',
+			'data'        => $pagedData['data'],
+			'year'        => $year,
+			'month'       => $month,
+			'mode'        => $mode,
+			'can_view_all' => $canViewAll,
+			'pagination'   => $pagedData['meta'],
 		]);
+	}
+
+	/**
+	 * GET /monitor-user/chart-usage?month=YYYY-MM&part_number=ABC
+	 * Mengembalikan data grafik penggunaan vs kuota untuk satu part number.
+	 */
+	public function getUsageChartData()
+	{
+		@set_time_limit(300);
+
+		[$year, $month] = $this->resolvePeriod();
+		$partNumber = $this->normalizePartNumber((string) ($this->request->getGet('part_number') ?? ''));
+
+		if ($partNumber === '') {
+			return $this->failValidationErrors('Parameter part_number wajib diisi.');
+		}
+
+		$prevYear = $year - 1;
+		$quotaRows = $this->crpApi->getAdjustmentsByYearUntilMonth($prevYear, 12);
+		$actualRows = $this->crpApi->getAdjustmentsByYearUntilMonth($year, $month);
+
+		$maxQuota = 0.0;
+		foreach ($quotaRows as $row) {
+			$warehouse = strtoupper(trim((string) ($row['WAREHOUSE'] ?? '')));
+			if ($warehouse !== 'KWSPT') {
+				continue;
+			}
+
+			$item = $this->normalizePartNumber((string) ($row['ITEM'] ?? ''));
+			if ($item !== $partNumber) {
+				continue;
+			}
+
+			$maxQuota += abs((float) ($row['QTY_ADJ'] ?? 0));
+		}
+
+		$monthlyUsage = array_fill(1, 12, 0.0);
+		foreach ($actualRows as $row) {
+			$warehouse = strtoupper(trim((string) ($row['WAREHOUSE'] ?? '')));
+			if ($warehouse !== 'KWSPT') {
+				continue;
+			}
+
+			$item = $this->normalizePartNumber((string) ($row['ITEM'] ?? ''));
+			if ($item !== $partNumber) {
+				continue;
+			}
+
+			$monthFromRow = $this->resolveMonthFromAdjustmentRow($row);
+			if ($monthFromRow === null) {
+				$monthFromRow = $month;
+			}
+
+			$monthlyUsage[$monthFromRow] += abs((float) ($row['QTY_ADJ'] ?? 0));
+		}
+
+		$labels = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+		$actualCumulative = [];
+		$actualMonthly = [];
+		$running = 0.0;
+
+		for ($i = 1; $i <= 12; $i++) {
+			if ($i <= $month) {
+				$running += (float) ($monthlyUsage[$i] ?? 0);
+				$actualCumulative[] = round($running, 2);
+				$actualMonthly[] = round((float) ($monthlyUsage[$i] ?? 0), 2);
+				continue;
+			}
+
+			$actualCumulative[] = null;
+			$actualMonthly[] = null;
+		}
+
+		return $this->respond([
+			'status'         => 'success',
+			'part_number'    => $partNumber,
+			'year'           => $year,
+			'labels'         => $labels,
+			'actual_usage'   => $actualCumulative,
+			'actual_monthly' => $actualMonthly,
+			'max_quota'      => array_fill(0, 12, round($maxQuota, 2)),
+			'max_quota_val'  => round($maxQuota, 2),
+		]);
+	}
+
+	/**
+	 * Admin (level 1-6) diizinkan melihat semua data monitor.
+	 */
+	private function canViewAllMonitorData(): bool
+	{
+		return (bool) (session()->get('can_access_crp') ?? false);
+	}
+
+	/**
+	 * Memvalidasi filter monitor dari query string.
+	 */
+	private function resolveMonitorFilter(bool $canViewAll): string
+	{
+		if (!$canViewAll) {
+			return 'alert';
+		}
+
+		$mode = strtolower(trim((string) ($this->request->getGet('mode') ?? 'alert')));
+
+		return in_array($mode, ['alert', 'all'], true) ? $mode : 'alert';
+	}
+
+	/**
+	 * Menomori ulang baris agar kolom NO selalu berurutan setelah filtering.
+	 */
+	private function reindexRowNumbers(array $rows): array
+	{
+		$no = 1;
+		foreach ($rows as &$row) {
+			$row['NO'] = $no++;
+		}
+		unset($row);
+
+		return $rows;
 	}
 
 	/**
@@ -72,6 +204,54 @@ class MonitorUserController extends BaseController
 		$month = max(1, min(12, (int) $matches[2]));
 
 		return [$year, $month];
+	}
+
+	/**
+	 * Ambil bulan (1-12) dari baris adjustment API.
+	 */
+	private function resolveMonthFromAdjustmentRow(array $row): ?int
+	{
+		foreach (['MONTH', 'MON', 'BULAN', 'MM'] as $monthField) {
+			if (isset($row[$monthField]) && is_numeric($row[$monthField])) {
+				$month = (int) $row[$monthField];
+				if ($month >= 1 && $month <= 12) {
+					return $month;
+				}
+			}
+		}
+
+		foreach (['DATE', 'TRANS_DATE', 'DOC_DATE', 'TANGGAL', 'ADJ_DATE', 'POSTING_DATE', 'DATE_ADJ', 'TRX_DATE', 'CREATE_DATE'] as $dateField) {
+			$dateValue = trim((string) ($row[$dateField] ?? ''));
+			if ($dateValue === '') {
+				continue;
+			}
+
+			if (preg_match('/^(\d{4})(\d{2})(\d{2})$/', $dateValue, $matches) === 1) {
+				$month = (int) $matches[2];
+				if ($month >= 1 && $month <= 12) {
+					return $month;
+				}
+			}
+
+			if (preg_match('/^\d{2}[\/\-](\d{2})[\/\-]\d{4}$/', $dateValue, $matches) === 1) {
+				$month = (int) $matches[1];
+				if ($month >= 1 && $month <= 12) {
+					return $month;
+				}
+			}
+
+			$timestamp = strtotime($dateValue);
+			if ($timestamp === false) {
+				continue;
+			}
+
+			$month = (int) date('n', $timestamp);
+			if ($month >= 1 && $month <= 12) {
+				return $month;
+			}
+		}
+
+		return null;
 	}
 
 	/**
@@ -150,12 +330,10 @@ class MonitorUserController extends BaseController
 	 * Menyusun data monitor per part number:
 	 * - QUOTA_QTY dari tahun sebelumnya (Jan-Des)
 	 * - UPTODATE_USAGE dari tahun terpilih (Jan-bulan picker)
-	 * - SISA_AKTUAL, SISA_IDEAL, KETERANGAN, dan STATUS
+	 * - SISA_AKTUAL, SISA_IDEAL, dan KETERANGAN
 	 */
 	private function buildMonitorData(int $year, int $month): array
 	{
-		$controlMarks = $this->getControlMarksByPeriod($year, $month);
-		$controlledPartNumbers = array_keys($controlMarks);
 		$prevYear = $year - 1;
 		$quotaRows = $this->crpApi->getAdjustmentsByYearUntilMonth($prevYear, 12);
 		$uptodateRows = $this->crpApi->getAdjustmentsByYearUntilMonth($year, $month);
@@ -182,10 +360,6 @@ class MonitorUserController extends BaseController
 					$apiDescriptions[$partNumber] = $apiDescription;
 				}
 			}
-		}
-
-		foreach ($controlledPartNumbers as $partNumber) {
-			$itemKeys[$partNumber] = true;
 		}
 
 		$sqlMasterMap = $this->getSparepartMasterMap(array_keys($itemKeys));
@@ -244,20 +418,6 @@ class MonitorUserController extends BaseController
 			$items[$partNumber]['JUMLAH_PEMAKAIAN'] += $qty;
 		}
 
-		// Fallback: part yang sudah ditandai control tetap harus muncul walaupun API CRP timeout.
-		foreach ($controlledPartNumbers as $partNumber) {
-			if (isset($items[$partNumber])) {
-				continue;
-			}
-
-			$items[$partNumber] = [
-				'PART_NUMBER'           => $partNumber,
-				'DESCRIPTION'           => $this->resolveFinalDescription($partNumber, $sqlMasterMap, '-'),
-				'QUOTA_QTY'             => 0,
-				'JUMLAH_PEMAKAIAN'      => 0,
-			];
-		}
-
 		$result = [];
 		$no = 1;
 
@@ -269,22 +429,18 @@ class MonitorUserController extends BaseController
 
 			$sisaAktual = round($quotaQty - $pemakaianQty, 2);
 			$sisaIdeal = round(($quotaQty / 12) * $month, 2);
-			$controlled = isset($controlMarks[$partNumber]);
 
 			$keterangan = $sisaAktual < $sisaIdeal ? 'Harap lebih hemat' : 'OK';
-			$status = $controlled ? 'Perlu Control' : 'Normal';
 
 			$result[] = [
-				'NO'                          => $no++,
-				'PART_NUMBER'                 => $partNumber,
-				'DESCRIPTION'                 => (string) ($item['DESCRIPTION'] ?? '-'),
-				'QUOTA_QTY'                   => $quotaQty,
-				'UPTODATE_USAGE'              => $pemakaianQty,
-				'SISA_AKTUAL'                 => $sisaAktual,
-				'SISA_IDEAL'                  => $sisaIdeal,
-				'KETERANGAN'                  => $keterangan,
-				'STATUS'                      => $status,
-				'CONTROLLED'                  => $controlled,
+				'NO'             => $no++,
+				'PART_NUMBER'    => $partNumber,
+				'DESCRIPTION'    => (string) ($item['DESCRIPTION'] ?? '-'),
+				'QUOTA_QTY'      => $quotaQty,
+				'UPTODATE_USAGE' => $pemakaianQty,
+				'SISA_AKTUAL'    => $sisaAktual,
+				'SISA_IDEAL'     => $sisaIdeal,
+				'KETERANGAN'     => $keterangan,
 			];
 		}
 
@@ -337,41 +493,6 @@ class MonitorUserController extends BaseController
 		}
 
 		return $master;
-	}
-
-	/**
-	 * Mengambil daftar part yang ditandai control pada periode tertentu.
-	 */
-	private function getControlMarksByPeriod(int $year, int $month): array
-	{
-		$period = sprintf('%04d-%02d', $year, $month);
-
-		try {
-			$db = Database::connect('sparepart_price');
-			$rows = $db->table('crp_control_marks')
-				->select('part_number')
-				->where('period_month', $period)
-				->where('controlled', 1)
-				->get()
-				->getResultArray();
-		} catch (\Throwable $e) {
-			log_message('error', 'Gagal membaca control marks monitor ({period}): {message}', [
-				'period' => $period,
-				'message' => $e->getMessage(),
-			]);
-
-			return [];
-		}
-
-		$marks = [];
-		foreach ($rows as $row) {
-			$partNumber = $this->normalizePartNumber((string) ($row['part_number'] ?? ''));
-			if ($partNumber !== '') {
-				$marks[$partNumber] = true;
-			}
-		}
-
-		return $marks;
 	}
 
 	/**

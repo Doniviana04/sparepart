@@ -43,13 +43,12 @@
 		#tblMonitor thead tr:nth-child(2) th { top: var(--row1-h, 40px); }
 		.table tbody td { font-size: 0.875rem; vertical-align: middle; }
 		.table-hover tbody tr:hover { background: #ecfeff; }
-		.badge-control {
-			background: #f59e0b;
-			color: #fff;
-			font-weight: 600;
-			padding: .45rem .7rem;
-			border-radius: 999px;
-			display: inline-block;
+		.btn-chart-toggle {
+			min-width: 92px;
+		}
+		.chart-summary {
+			font-size: .9rem;
+			color: #495057;
 		}
 		.pagination-wrap {
 			background: #fff;
@@ -90,6 +89,8 @@
 </head>
 <body>
 
+<?php $canViewAllMonitorData = (bool) (session()->get('can_access_crp') ?? false); ?>
+
 <div class="container-fluid py-4">
 
 	<!-- Back navigation -->
@@ -101,20 +102,29 @@
 		<h5 class="mb-0 fw-semibold" id="pageTitle">MONITOR PEMAKAIAN QUOTA SPAREPART</h5>
 	</div>
 
-	<div class="d-flex flex-wrap align-items-end justify-content-between gap-3 mb-4">
+	<div class="d-flex flex-wrap align-items-end gap-3 mb-4">
 		<div>
 			<label class="form-label fw-semibold small mb-1">Bulan / Tahun</label>
 			<input type="month" class="form-control form-control-sm" id="chart_month" value="<?= date('Y-m') ?>">
-			<div class="mt-2">
-				<label class="form-label fw-semibold small mb-1">Show</label>
-				<select class="form-select form-select-sm" id="show_limit">
-					<option value="50">50</option>
-					<option value="100" selected>100</option>
-					<option value="200">200</option>
-					<option value="all">Semua data</option>
-				</select>
-			</div>
 		</div>
+		<div>
+			<label class="form-label fw-semibold small mb-1">Show Data	</label>
+			<select class="form-select form-select-sm" id="show_limit">
+				<option value="50">50</option>
+				<option value="100" selected>100</option>
+				<option value="200">200</option>
+				<option value="all">Semua data</option>
+			</select>
+		</div>
+		<?php if ($canViewAllMonitorData): ?>
+		<div>
+			<label class="form-label fw-semibold small mb-1">Filter Notifikasi</label>
+			<select class="form-select form-select-sm" id="view_mode">
+				<option value="alert" selected>Harap lebih hemat</option>
+				<option value="all">Semua item</option>
+			</select>
+		</div>
+		<?php endif; ?>
 	</div>
 
 	<div class="card card-custom">
@@ -132,8 +142,8 @@
 								UP TO DATE
 							</th>
 							<th colspan="2">SISA QUOTA</th>
-							<th rowspan="2">KETERANGAN</th>
-							<th rowspan="2">STATUS</th>
+							<th rowspan="2">GRAFIK</th>
+							<th rowspan="2">NOTIFIKASI</th>
 						</tr>
 						<tr>
 							<th>AKTUAL</th>
@@ -152,9 +162,30 @@
 			<ul class="pagination pagination-sm mb-0" id="paginationNav"></ul>
 		</nav>
 	</div>
+
+	<div class="modal fade" id="graphModal" tabindex="-1" aria-hidden="true">
+		<div class="modal-dialog modal-xl modal-dialog-centered">
+			<div class="modal-content">
+				<div class="modal-header">
+					<div>
+						<h5 class="modal-title mb-0" id="graphModalTitle">Grafik Penggunaan</h5>
+						<div class="chart-summary" id="graphModalSubtitle">Memuat data grafik...</div>
+					</div>
+					<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+				</div>
+				<div class="modal-body">
+					<div style="height: 420px;">
+						<canvas id="usageChart"></canvas>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 
 <script>
 function fixStickyHeaderOffsets() {
@@ -169,11 +200,19 @@ function fixStickyHeaderOffsets() {
 }
 
 const API_URL = '<?= base_url('monitor-user/data') ?>';
-const CONTROL_UPDATE_EVENT_KEY = 'crp-control-updated';
+const CHART_API_URL = '<?= base_url('monitor-user/chart-usage') ?>';
+const CAN_VIEW_ALL = <?= json_encode($canViewAllMonitorData) ?>;
 const AUTO_REFRESH_INTERVAL_MS = 10000;
 let autoRefreshTimer = null;
 let currentPage = 1;
 let pageSize = '100';
+let viewMode = 'alert';
+let usageChart = null;
+let activeChartPartNumber = '';
+let activeChartMonth = '';
+
+const graphModalElement = document.getElementById('graphModal');
+const graphModal = graphModalElement ? new bootstrap.Modal(graphModalElement) : null;
 
 function formatNumber(n) {
 	if (n == null) return '-';
@@ -183,6 +222,145 @@ function formatNumber(n) {
 function updateYearHeaders(year) {
 	document.getElementById('pageTitle').textContent = `MONITOR PEMAKAIAN QUOTA SPAREPART ${year}`;
 	document.getElementById('quotaYearHeader').textContent = `QUOTA QTY ${year}`;
+}
+
+function renderGraphButton(row) {
+	return `
+		<button type="button" class="btn btn-sm btn-outline-primary btn-chart-toggle"
+			data-part-number="${encodeURIComponent(String(row.PART_NUMBER ?? ''))}"
+			data-description="${encodeURIComponent(String(row.DESCRIPTION ?? '-'))}"
+			title="Lihat grafik penggunaan">
+			<i class="bi bi-graph-up"></i> Grafik
+		</button>`;
+}
+
+function ensureUsageChart() {
+	const canvas = document.getElementById('usageChart');
+	if (!canvas) {
+		return null;
+	}
+
+	if (usageChart) {
+		return usageChart;
+	}
+
+	usageChart = new Chart(canvas, {
+		type: 'line',
+		data: {
+			labels: [],
+			datasets: [
+				{
+					label: 'Actual Penggunaan',
+					data: [],
+					borderColor: '#0f766e',
+					backgroundColor: 'rgba(15, 118, 110, 0.15)',
+					tension: 0.35,
+					fill: false,
+				},
+				{
+					label: 'Max Kuota',
+					data: [],
+					borderColor: '#d97706',
+					backgroundColor: 'rgba(217, 119, 6, 0.12)',
+					tension: 0.2,
+					borderDash: [6, 4],
+					fill: false,
+				},
+			],
+		},
+		options: {
+			responsive: true,
+			maintainAspectRatio: false,
+			plugins: {
+				legend: {
+					position: 'bottom',
+				},
+			},
+			scales: {
+				y: {
+					beginAtZero: true,
+					ticks: {
+						callback: value => Number(value).toLocaleString('id-ID', {
+							minimumFractionDigits: 0,
+							maximumFractionDigits: 2,
+						}),
+					},
+				},
+			},
+		},
+	});
+
+	return usageChart;
+}
+
+function updateUsageChart(data) {
+	const chart = ensureUsageChart();
+	if (!chart) {
+		return;
+	}
+
+	chart.data.labels = data.labels ?? [];
+	chart.data.datasets[0].data = data.actual_usage ?? [];
+	chart.data.datasets[1].data = data.max_quota ?? [];
+	chart.update();
+}
+
+function loadUsageChart(month, partNumber, description = '-') {
+	if (!partNumber || !month) {
+		return;
+	}
+
+	activeChartPartNumber = partNumber;
+	activeChartMonth = month;
+
+	const title = document.getElementById('graphModalTitle');
+	const subtitle = document.getElementById('graphModalSubtitle');
+	if (title) {
+		title.textContent = `Grafik Penggunaan ${partNumber}`;
+	}
+	if (subtitle) {
+		subtitle.textContent = description && description !== '-'
+			? `${description} | Periode ${month}`
+			: `Periode ${month}`;
+	}
+
+	if (graphModal) {
+		graphModal.show();
+	}
+
+	const chart = ensureUsageChart();
+	if (chart) {
+		chart.data.labels = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+		chart.data.datasets[0].data = [];
+		chart.data.datasets[1].data = [];
+		chart.update();
+	}
+
+	fetch(`${CHART_API_URL}?month=${encodeURIComponent(month)}&part_number=${encodeURIComponent(partNumber)}`)
+		.then(r => {
+			if (!r.ok) {
+				throw new Error(`HTTP ${r.status}`);
+			}
+			return r.json();
+		})
+		.then(json => {
+			if (activeChartPartNumber !== partNumber || activeChartMonth !== month) {
+				return;
+			}
+
+			updateUsageChart(json);
+			if (subtitle) {
+				subtitle.textContent = description && description !== '-'
+					? `${description} | Max kuota ${formatNumber(json.max_quota_val ?? 0)} | Periode ${month}`
+					: `Max kuota ${formatNumber(json.max_quota_val ?? 0)} | Periode ${month}`;
+			}
+		})
+		.catch(err => {
+			if (subtitle) {
+				subtitle.textContent = `Gagal memuat grafik: ${err.message}`;
+			}
+			console.error(err);
+		});
 }
 
 function updatePagination(meta = {}) {
@@ -274,7 +452,7 @@ function loadData(month, page = 1, options = {}) {
 		tbody.innerHTML = '<tr><td colspan="9" class="text-center py-3"><span class="spinner-border spinner-border-sm me-2"></span>Loading data...</td></tr>';
 	}
 
-	fetch(`${API_URL}?month=${encodeURIComponent(month)}&page=${page}&limit=${encodeURIComponent(pageSize)}`)
+	fetch(`${API_URL}?month=${encodeURIComponent(month)}&page=${page}&limit=${encodeURIComponent(pageSize)}&mode=${encodeURIComponent(viewMode)}`)
 		.then(r => {
 			if (!r.ok) throw new Error(`HTTP ${r.status}`);
 			return r.json();
@@ -285,9 +463,12 @@ function loadData(month, page = 1, options = {}) {
 			const year = parseInt(json.year ?? month.split('-')[0], 10);
 			updateYearHeaders(year);
 			updatePagination(meta);
+			const emptyMessage = viewMode === 'all'
+				? 'No data available'
+				: 'Tidak ada item yang memerlukan control';
 
 			if (rows.length === 0) {
-				tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">No data available</td></tr>';
+				tbody.innerHTML = `<tr><td colspan="9" class="text-center text-muted py-3">${emptyMessage}</td></tr>`;
 				return;
 			}
 
@@ -300,8 +481,12 @@ function loadData(month, page = 1, options = {}) {
 					<td class="text-end">${formatNumber(d.UPTODATE_USAGE)}</td>
 					<td class="text-end">${formatNumber(d.SISA_AKTUAL)}</td>
 					<td class="text-end">${formatNumber(d.SISA_IDEAL)}</td>
-					<td class="text-center">${d.KETERANGAN ?? '-'}</td>
-					<td class="text-center"><span class="badge-control">${d.STATUS ?? 'Normal'}</span></td>
+						<td class="text-center">${renderGraphButton(d)}</td>
+					<td class="text-center">
+						<span class="badge ${d.KETERANGAN === 'Harap lebih hemat' ? 'bg-warning text-dark' : 'bg-secondary'} rounded-pill px-3 py-2">
+							${d.KETERANGAN ?? '-'}
+						</span>
+					</td>
 				</tr>`).join('');
 		})
 		.catch(err => {
@@ -333,11 +518,19 @@ function setupAutoRefresh() {
 
 const monthPicker = document.getElementById('chart_month');
 const showLimit = document.getElementById('show_limit');
+const viewModeSelect = document.getElementById('view_mode');
 monthPicker.addEventListener('change', () => loadData(monthPicker.value, 1));
 showLimit.addEventListener('change', () => {
 	pageSize = showLimit.value;
 	loadData(monthPicker.value, 1);
 });
+if (CAN_VIEW_ALL && viewModeSelect) {
+	viewMode = viewModeSelect.value || 'alert';
+	viewModeSelect.addEventListener('change', () => {
+		viewMode = viewModeSelect.value || 'alert';
+		loadData(monthPicker.value, 1);
+	});
+}
 document.getElementById('paginationNav').addEventListener('click', event => {
 	const button = event.target.closest('button[data-page]');
 	if (!button || button.closest('.disabled')) {
@@ -351,10 +544,17 @@ document.getElementById('paginationNav').addEventListener('click', event => {
 
 	loadData(monthPicker.value, targetPage);
 });
-window.addEventListener('storage', event => {
-	if (event.key === CONTROL_UPDATE_EVENT_KEY) {
-		refreshFromCurrentSelection();
+document.querySelector('#tblMonitor tbody').addEventListener('click', event => {
+	const button = event.target.closest('.btn-chart-toggle');
+	if (!button) {
+		return;
 	}
+
+	loadUsageChart(
+		monthPicker.value,
+		decodeURIComponent(String(button.dataset.partNumber ?? '')),
+		decodeURIComponent(String(button.dataset.description ?? '-'))
+	);
 });
 document.addEventListener('visibilitychange', () => {
 	if (!document.hidden) {

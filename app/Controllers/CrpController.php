@@ -53,7 +53,20 @@ class CrpController extends BaseController
 
         [$year, $month] = $this->resolvePeriod();
         $prevYear = $year - 1;
+        $controlMode = $this->resolveControlMode();
         $result = $this->buildResultData($year, $month);
+
+        if ($controlMode === 'controlled') {
+            $result = array_values(array_filter(
+                $result,
+                static fn(array $row): bool => !empty($row['CONTROLLED'])
+            ));
+        }
+
+        $filters = $this->buildFilterOptions($result, $year);
+        $result = $this->applyColumnFilters($result, $year);
+
+        $result = $this->reindexRowNumbers($result);
         $pagination = $this->resolvePagination();
         $pagedData = $this->paginateRows($result, $pagination['page'], $pagination['per_page'], $pagination['is_all']);
 
@@ -63,6 +76,8 @@ class CrpController extends BaseController
             'year'      => $year,
             'month'     => $month,
             'prev_year' => $prevYear,
+            'control_mode' => $controlMode,
+            'filters'   => $filters,
             'pagination'=> $pagedData['meta'],
         ]);
     }
@@ -124,14 +139,17 @@ class CrpController extends BaseController
 
         $labels = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Des'];
         $actualCumulative = [];
+        $actualMonthly = [];
         $running = 0.0;
 
         for ($i = 1; $i <= 12; $i++) {
             if ($i <= $month) {
                 $running += (float) ($monthlyUsage[$i] ?? 0);
                 $actualCumulative[] = round($running, 2);
+                $actualMonthly[] = round((float) ($monthlyUsage[$i] ?? 0), 2);
             } else {
                 $actualCumulative[] = null;
+                $actualMonthly[] = null;
             }
         }
 
@@ -143,8 +161,123 @@ class CrpController extends BaseController
             'year'          => $year,
             'labels'        => $labels,
             'actual_usage'  => $actualCumulative,
+            'actual_monthly' => $actualMonthly,
             'max_quota'     => $maxQuotaLine,
             'max_quota_val' => round($maxQuota, 2),
+        ]);
+    }
+
+    /**
+     * GET /crp/chart-summary-amount?month=2026-03
+     * Mengembalikan data grafik summary Amount dari semua part number.
+     * Bars: Amount current year (per bulan sampai selected month)
+     * Line: Amount previous year (full 12 months)
+     */
+    public function getSummaryAmountChartData()
+    {
+        @set_time_limit(300);
+
+        [$year, $month] = $this->resolvePeriod();
+        $prevYear = $year - 1;
+
+        // Ambil data tahun sebelumnya (full year)
+        $adjustmentsPrev = $this->crpApi->getAdjustmentsByYearUntilMonth($prevYear, 12);
+
+        // Ambil data tahun berjalan sampai bulan terpilih
+        $adjustmentsCurr = $this->crpApi->getAdjustmentsByYearUntilMonth($year, $month);
+
+        // Ambil master untuk resolve price
+        $itemKeys = [];
+        foreach ([$adjustmentsPrev, $adjustmentsCurr] as $rows) {
+            foreach ($rows as $row) {
+                $warehouse = strtoupper(trim((string) ($row['WAREHOUSE'] ?? '')));
+                if ($warehouse !== 'KWSPT') {
+                    continue;
+                }
+                $partNumber = $this->normalizePartNumber((string) ($row['ITEM'] ?? ''));
+                if ($partNumber !== '') {
+                    $itemKeys[$partNumber] = true;
+                }
+            }
+        }
+
+        $sqlMasterMap = $this->getSparepartMasterMap(array_keys($itemKeys));
+
+        // Agregasi monthly amount untuk tahun sebelumnya (full year)
+        $monthlyAmountPrev = array_fill(1, 12, 0.0);
+        foreach ($adjustmentsPrev as $row) {
+            $warehouse = strtoupper(trim((string) ($row['WAREHOUSE'] ?? '')));
+            if ($warehouse !== 'KWSPT') {
+                continue;
+            }
+
+            $key = $this->normalizePartNumber((string) ($row['ITEM'] ?? ''));
+            if ($key === '') {
+                continue;
+            }
+
+            $monthFromRow = $this->resolveMonthFromAdjustmentRow($row);
+            if ($monthFromRow === null) {
+                $monthFromRow = 12; // default ke Dec jika tidak dapat parse
+            }
+
+            $qty = abs((float) ($row['QTY_ADJ'] ?? 0));
+            $price = $this->resolveFinalPrice($key, $sqlMasterMap, (float) ($row['PRICE'] ?? 0));
+            $monthlyAmountPrev[$monthFromRow] += ($qty * $price);
+        }
+
+        // Agregasi monthly amount untuk tahun berjalan (until selected month)
+        $monthlyAmountCurr = array_fill(1, 12, 0.0);
+        foreach ($adjustmentsCurr as $row) {
+            $warehouse = strtoupper(trim((string) ($row['WAREHOUSE'] ?? '')));
+            if ($warehouse !== 'KWSPT') {
+                continue;
+            }
+
+            $key = $this->normalizePartNumber((string) ($row['ITEM'] ?? ''));
+            if ($key === '') {
+                continue;
+            }
+
+            $monthFromRow = $this->resolveMonthFromAdjustmentRow($row);
+            if ($monthFromRow === null) {
+                $monthFromRow = $month;
+            }
+
+            $qty = abs((float) ($row['QTY_ADJ'] ?? 0));
+            $price = $this->resolveFinalPrice($key, $sqlMasterMap, (float) ($row['PRICE'] ?? 0));
+            $monthlyAmountCurr[$monthFromRow] += ($qty * $price);
+        }
+
+        // Format untuk chart: current year hanya sampai selected month
+        $labels = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Des'];
+        $amountCurrFormatted = [];
+        $amountPrevFormatted = [];
+
+        for ($i = 1; $i <= 12; $i++) {
+            // Current year: null untuk bulan yang belum terlewat
+            if ($i <= $month) {
+                $amountCurrFormatted[] = round($monthlyAmountCurr[$i], 2);
+            } else {
+                $amountCurrFormatted[] = null;
+            }
+
+            // Previous year: full 12 months
+            $amountPrevFormatted[] = round($monthlyAmountPrev[$i], 2);
+        }
+
+        $totalPrevYear = array_sum($monthlyAmountPrev);
+        $totalCurrYear = array_sum($monthlyAmountCurr);
+
+        return $this->respond([
+            'status'           => 'success',
+            'year'             => $year,
+            'prev_year'        => $prevYear,
+            'labels'           => $labels,
+            'amount_current'   => $amountCurrFormatted,
+            'amount_previous'  => $amountPrevFormatted,
+            'total_curr_year'  => round($totalCurrYear, 2),
+            'total_prev_year'  => round($totalPrevYear, 2),
         ]);
     }
 
@@ -197,6 +330,7 @@ class CrpController extends BaseController
                 'TARGET_5PCT',
                 'ACH_AMOUNT',
                 'ACH_PERSEN',
+                'VARIANCE_AMOUNT',
                 'STATUS_CONTROL',
             ];
 
@@ -208,16 +342,20 @@ class CrpController extends BaseController
             $rowNum = 2;
             foreach ($result as $row) {
                 $achPercent = (float) rtrim((string) ($row['ACH_PERSEN'] ?? '0%'), '%') / 100;
+                $prevAmount = (float) ($row['AMOUNT_' . $prevYear] ?? 0);
+                $achAmount = (float) ($row['ACH_AMOUNT'] ?? 0);
+                $varianceAmount = $achAmount - $prevAmount;
 
                 $sheet->setCellValue("A{$rowNum}", (int) ($row['NO'] ?? 0));
                 $sheet->setCellValue("B{$rowNum}", (string) ($row['PART_NUMBER'] ?? '-'));
                 $sheet->setCellValue("C{$rowNum}", (string) ($row['DESCRIPTION'] ?? '-'));
                 $sheet->setCellValue("D{$rowNum}", (float) ($row['USAGE_QTY_' . $prevYear] ?? 0));
-                $sheet->setCellValue("E{$rowNum}", (float) ($row['AMOUNT_' . $prevYear] ?? 0));
+                $sheet->setCellValue("E{$rowNum}", $prevAmount);
                 $sheet->setCellValue("F{$rowNum}", (float) ($row['TARGET_5PCT'] ?? 0));
-                $sheet->setCellValue("G{$rowNum}", (float) ($row['ACH_AMOUNT'] ?? 0));
+                $sheet->setCellValue("G{$rowNum}", $achAmount);
                 $sheet->setCellValue("H{$rowNum}", $achPercent);
-                $sheet->setCellValue("I{$rowNum}", (string) ($row['CONTROL_STATUS'] ?? 'Normal'));
+                $sheet->setCellValue("I{$rowNum}", $varianceAmount);
+                $sheet->setCellValue("J{$rowNum}", (string) ($row['CONTROL_STATUS'] ?? 'Normal'));
                 $rowNum++;
             }
 
@@ -232,7 +370,7 @@ class CrpController extends BaseController
                 $sheet->getColumnDimension($colLetter)->setAutoSize(true);
             }
 
-            $sheet->getStyle('A1:I1')->applyFromArray([
+            $sheet->getStyle('A1:J1')->applyFromArray([
                 'font' => [
                     'bold' => true,
                     'color' => ['rgb' => 'FFFFFF'],
@@ -251,9 +389,10 @@ class CrpController extends BaseController
                 $sheet->getStyle("A2:A{$lastRow}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
                 $sheet->getStyle("D2:G{$lastRow}")->getNumberFormat()->setFormatCode('#,##0.00');
                 $sheet->getStyle("H2:H{$lastRow}")->getNumberFormat()->setFormatCode('0.00%');
-                $sheet->getStyle("D2:H{$lastRow}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
-                $sheet->getStyle("I2:I{$lastRow}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
-                $sheet->getStyle("A2:I{$lastRow}")->getAlignment()->setVertical(Alignment::VERTICAL_CENTER);
+                $sheet->getStyle("I2:I{$lastRow}")->getNumberFormat()->setFormatCode('#,##0.00');
+                $sheet->getStyle("D2:I{$lastRow}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_RIGHT);
+                $sheet->getStyle("J2:J{$lastRow}")->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+                $sheet->getStyle("A2:J{$lastRow}")->getAlignment()->setVertical(Alignment::VERTICAL_CENTER);
             }
 
             $sheet->getStyle($range)->applyFromArray([
@@ -498,6 +637,30 @@ class CrpController extends BaseController
     }
 
     /**
+     * Ambil mode filter control dari query string.
+     */
+    private function resolveControlMode(): string
+    {
+        $mode = strtolower(trim((string) ($this->request->getGet('control_mode') ?? 'all')));
+
+        return in_array($mode, ['all', 'controlled'], true) ? $mode : 'all';
+    }
+
+    /**
+     * Menomori ulang baris agar kolom NO tetap berurutan setelah filtering.
+     */
+    private function reindexRowNumbers(array $rows): array
+    {
+        $no = 1;
+        foreach ($rows as &$row) {
+            $row['NO'] = $no++;
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    /**
      * Potong array data menjadi halaman tertentu dan sertakan metadata pagination.
      */
     private function paginateRows(array $rows, int $page, ?int $perPage, bool $isAll = false): array
@@ -589,6 +752,7 @@ class CrpController extends BaseController
                 continue;
             }
 
+            
             $key = $this->normalizePartNumber((string) ($adj['ITEM'] ?? ''));
             if ($key === '') {
                 continue;
@@ -654,6 +818,7 @@ class CrpController extends BaseController
             $target_5pct   = $prev_amount * 0.05;
             $ach_amount    = $item['ach_amount'] ?? 0;
             $persen        = $prev_amount > 0 ? ($ach_amount / $prev_amount) * 100 : 0;
+            $variance      = $prev_amount - $ach_amount;
             $partNumber    = $this->normalizePartNumber((string) ($item['ITEM'] ?? ''));
             $controlled    = isset($controlMarks[$partNumber]);
 
@@ -666,12 +831,149 @@ class CrpController extends BaseController
                 'TARGET_5PCT'     => round($target_5pct, 2),
                 'ACH_AMOUNT'      => round($ach_amount, 2),
                 'ACH_PERSEN'      => round($persen, 2) . '%',
+                'VARIANCE_AMOUNT' => round($variance, 2),
                 'CONTROLLED'      => $controlled,
                 'CONTROL_STATUS'  => $controlled ? 'Perlu Control' : 'Normal',
             ];
         }
 
         return $result;
+    }
+
+    /**
+     * Terapkan filter dropdown per kolom sebelum pagination.
+     */
+    private function applyColumnFilters(array $rows, int $year): array
+    {
+        $prevYear = $year - 1;
+        $filters = [
+            'part_number'     => trim((string) ($this->request->getGet('filter_part_number') ?? '')),
+            'description'     => trim((string) ($this->request->getGet('filter_description') ?? '')),
+            'usage_qty'       => trim((string) ($this->request->getGet('filter_usage_qty') ?? '')),
+            'ach_persen'      => trim((string) ($this->request->getGet('filter_ach_persen') ?? '')),
+            'variance_amount' => trim((string) ($this->request->getGet('filter_variance_amount') ?? '')),
+        ];
+
+        return array_values(array_filter($rows, function (array $row) use ($filters, $prevYear): bool {
+            foreach ($filters as $key => $expected) {
+                if ($expected === '') {
+                    continue;
+                }
+
+                $actual = $this->getColumnFilterValue($row, $key, $prevYear);
+                if ($key === 'variance_amount') {
+                    $variance = (float) ($row['VARIANCE_AMOUNT'] ?? 0);
+                    if ($expected === 'positive' && $variance <= 0) {
+                        return false;
+                    }
+
+                    if ($expected === 'negative' && $variance >= 0) {
+                        return false;
+                    }
+
+                    continue;
+                }
+
+                if ($actual !== $expected) {
+                    return false;
+                }
+            }
+
+            return true;
+        }));
+    }
+
+    /**
+     * Kumpulkan opsi dropdown unik untuk setiap kolom filter.
+     */
+    private function buildFilterOptions(array $rows, int $year): array
+    {
+        $prevYear = $year - 1;
+        $options = [
+            'part_number'     => [],
+            'description'     => [],
+            'usage_qty'       => [],
+            'ach_persen'      => [],
+            'variance_amount' => [
+                ['value' => 'positive', 'label' => 'Positif'],
+                ['value' => 'negative', 'label' => 'Negatif'],
+            ],
+        ];
+
+        foreach ($rows as $row) {
+            foreach (array_keys($options) as $key) {
+                if ($key === 'variance_amount') {
+                    continue;
+                }
+
+                $value = $this->getColumnFilterValue($row, $key, $prevYear);
+                if ($value === '' || isset($options[$key][$value])) {
+                    continue;
+                }
+
+                $options[$key][$value] = [
+                    'value' => $value,
+                    'label' => $this->formatFilterLabel($key, $value),
+                ];
+            }
+        }
+
+        foreach ($options as $key => $values) {
+            $options[$key] = array_values($values);
+        }
+
+        return $options;
+    }
+
+    /**
+     * Ambil nilai filter dalam format canonical agar mudah dibandingkan.
+     */
+    private function getColumnFilterValue(array $row, string $key, int $prevYear): string
+    {
+        return match ($key) {
+            'part_number' => strtoupper(trim((string) ($row['PART_NUMBER'] ?? ''))),
+            'description' => trim((string) ($row['DESCRIPTION'] ?? '')),
+            'usage_qty' => $this->formatCanonicalNumber($row['USAGE_QTY_' . $prevYear] ?? null),
+            'ach_persen' => $this->formatCanonicalPercent($row['ACH_PERSEN'] ?? null),
+            'variance_amount' => trim((string) ($row['VARIANCE_AMOUNT'] ?? '')),
+            default => '',
+        };
+    }
+
+    /**
+     * Format label dropdown agar lebih mudah dibaca pengguna.
+     */
+    private function formatFilterLabel(string $key, string $value): string
+    {
+        return match ($key) {
+            'usage_qty' => number_format((float) $value, 2, ',', '.'),
+            'ach_persen' => number_format((float) $value, 2, ',', '.') . '%',
+            default => $value,
+        };
+    }
+
+    /**
+     * Normalisasi angka menjadi string canonical 2 desimal.
+     */
+    private function formatCanonicalNumber($value): string
+    {
+        if ($value === null || $value === '') {
+            return '';
+        }
+
+        return number_format((float) $value, 2, '.', '');
+    }
+
+    /**
+     * Normalisasi persentase menjadi string canonical 2 desimal tanpa tanda %.
+     */
+    private function formatCanonicalPercent($value): string
+    {
+        if ($value === null || $value === '') {
+            return '';
+        }
+
+        return number_format((float) rtrim((string) $value, '%'), 2, '.', '');
     }
 
     /**

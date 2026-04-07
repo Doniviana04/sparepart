@@ -20,6 +20,7 @@ $routes->group('crp', ['namespace' => 'App\Controllers', 'filter' => 'role:1,2,3
     $routes->get('/',            'CrpController::index');       // GET /crp
     $routes->get('data',         'CrpController::getData');     // GET /crp/data?month=2026-03
     $routes->get('chart-usage',  'CrpController::getUsageChartData');
+    $routes->get('chart-summary-amount', 'CrpController::getSummaryAmountChartData');
     $routes->get('export-excel', 'CrpController::exportExcel'); // GET /crp/export-excel
     $routes->post('control',     'CrpController::setControlStatus');
 });
@@ -28,4 +29,5 @@ $routes->group('crp', ['namespace' => 'App\Controllers', 'filter' => 'role:1,2,3
 $routes->group('monitor-user', ['namespace' => 'App\Controllers', 'filter' => 'role:1,2,3,4,5,6,7'], function ($routes) {
     $routes->get('/',    'MonitorUserController::index');
     $routes->get('data', 'MonitorUserController::getData');
+    $routes->get('chart-usage', 'MonitorUserController::getUsageChartData');
 });

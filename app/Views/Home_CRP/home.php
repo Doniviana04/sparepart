@@ -187,11 +187,14 @@
 <body>
 
 <?php
-  $level        = (int) (session()->get('level') ?? 0);
+  $jabatan      = (int) (session()->get('kode_jabatan') ?? session()->get('level') ?? 0);
   $name         = session()->get('name') ?? 'User';
   $username     = session()->get('username') ?? '';
-  $hasCrpAccess = in_array($level, [1, 2, 3, 4, 5, 6], true);
-  $displayRole  = $level > 0 ? ('Level ' . $level) : 'Pengguna';
+  $hasCrpAccess = in_array($jabatan, [1, 2, 3, 4, 5, 6], true);
+  $displayRole  = trim((string) (session()->get('jabatan') ?? ''));
+  if ($displayRole === '') {
+    $displayRole = 'Pengguna';
+  }
 ?>
 
 <!-- ── SIDEBAR ── -->
@@ -283,14 +286,14 @@
   <div class="row g-4">
 
     <?php if ($hasCrpAccess): ?>
-    <!-- CRP Dashboard – level 1-6 -->
+    <!-- CRP Dashboard – kode_jabatan 1-6 -->
     <div class="col-md-6 col-lg-4">
       <a href="<?= base_url('crp') ?>" class="menu-card card card-crp p-4">
         <div class="d-flex align-items-center gap-3 mb-3">
           <div class="card-icon text-primary"><i class="bi bi-clipboard-data-fill"></i></div>
           <div>
             <h6 class="fw-bold mb-0">CRP Dashboard</h6>
-            <span class="badge bg-primary role-badge">Level 1-6</span>
+            <span class="badge bg-primary role-badge">Jabatan 1-6</span>
           </div>
         </div>
         <p class="text-muted small mb-3">
@@ -325,17 +328,17 @@
     </div>
 
     <?php if (!$hasCrpAccess): ?>
-    <!-- Placeholder CRP – level 7, tampil abu-abu -->
+    <!-- Placeholder CRP – kode_jabatan 7, tampil abu-abu -->
     <div class="col-md-6 col-lg-4">
       <div class="menu-card card card-crp card-disabled p-4">
         <div class="d-flex align-items-center gap-3 mb-3">
           <div class="card-icon text-secondary"><i class="bi bi-clipboard-data-fill"></i></div>
           <div>
             <h6 class="fw-bold mb-0">CRP Dashboard</h6>
-            <span class="badge bg-secondary role-badge">Level 7 Tidak Diizinkan</span>
+            <span class="badge bg-secondary role-badge">Jabatan 7 Tidak Diizinkan</span>
           </div>
         </div>
-        <p class="text-muted small mb-3">Halaman ini hanya dapat diakses oleh user level 1 sampai 6.</p>
+        <p class="text-muted small mb-3">Halaman ini hanya dapat diakses oleh user jabatan 1 sampai 6.</p>
         <div class="d-flex align-items-center gap-1 text-secondary fw-semibold small">
           <i class="bi bi-lock-fill me-1"></i> Akses Terbatas
         </div>

@@ -29,6 +29,14 @@
     .table-hover tbody tr:hover { background: #f0f8ff; }
     .row-controlled { background: #fff6df; }
     .row-controlled:hover { background: #ffefc4 !important; }
+    .btn-control-toggle {
+      min-width: 34px;
+      font-weight: 700;
+      border-width: 1.5px;
+    }
+    .btn-graph-toggle {
+      min-width: 84px;
+    }
 
     /* ── STICKY HEADER FIX ── */
     /* Wrapper harus overflow-y: auto agar sticky bekerja */
@@ -60,6 +68,18 @@
     #tblCrp thead tr:nth-child(1) th { top: 0; }
     #tblCrp thead tr:nth-child(2) th { top: var(--row1-h, 40px); }
     #tblCrp thead tr:nth-child(3) th { top: calc(var(--row1-h, 40px) + var(--row2-h, 33px)); }
+
+    .filter-panel {
+      background: #fff;
+      border: 1px solid #d9d9d9;
+      border-radius: 10px;
+      padding: .75rem;
+    }
+
+    .column-filter {
+      min-width: 0;
+      font-size: .8rem;
+    }
 
     .pagination-wrap {
       background: #fff;
@@ -113,21 +133,16 @@
 
   <div class="card card-custom mb-3">
     <div class="card-body">
-      <div class="d-flex flex-wrap align-items-end justify-content-between gap-3 mb-3">
-        <div>
-          <label class="form-label fw-semibold small mb-1">Part Number (Grafik)</label>
-          <select class="form-select form-select-sm" id="part_selector" style="min-width: 280px;">
-            <option value="">Pilih part number</option>
-          </select>
-        </div>
-        <div class="small text-muted" id="chartSummary">Actual Penggunaan vs Max Kuota</div>
+      <div class="mb-3">
+        <label class="form-label fw-semibold small mb-1">Summary Amount (Semua Part Number)</label>
+        <div class="small text-muted" id="summaryAmountText">Actual Amount vs Amount Tahun Lalu</div>
       </div>
       <div style="height: 320px;">
-        <canvas id="usageQuotaChart"></canvas>
+        <canvas id="summaryAmountChart"></canvas>
       </div>
+      <div class="mt-3 pt-2 border-top small" id="summaryAmountConclusion">Kesimpulan: -</div>
     </div>
   </div>
-
   <div class="d-flex flex-wrap align-items-end justify-content-between gap-3 mb-4">
     <div class="d-flex flex-wrap align-items-end gap-3">
       <div>
@@ -135,12 +150,13 @@
         <input type="month" class="form-control form-control-sm" id="chart_month" value="<?= date('Y-m') ?>">
       </div>
       <div>
-        <label class="form-label fw-semibold small mb-1">Show</label>
+        <label class="form-label fw-semibold small mb-1">Show Data</label>
         <select class="form-select form-select-sm" id="show_limit">
           <option value="50">50</option>
           <option value="100" selected>100</option>
           <option value="200">200</option>
           <option value="all">Semua data</option>
+          <option value="controlled">Hanya yang di-control</option>
         </select>
       </div>
     </div>
@@ -163,7 +179,9 @@
               <th rowspan="3">DESCRIPTION</th>
               <th colspan="2" id="totalYear">TOTAL 2025</th>
               <th colspan="3" id="targetYear">TARGET & ACHIEVEMENT CRP 2026</th>
-              <th rowspan="3">AKSI</th>
+              <th rowspan="3">VARIANCE AMOUNT</th>
+              <th rowspan="3">GRAFIK</th>
+              <th rowspan="3">KONTROL</th>
             </tr>
             <tr>
               <th rowspan="2" id="usageYear">USAGE<br>QTY 2025</th>
@@ -184,6 +202,44 @@
     </div>
   </div>
 
+  <div class="filter-panel mt-3 mb-2">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+      <div>
+        <div class="fw-semibold small">Filter Kolom</div>
+        <div class="text-muted small">Pilih nilai untuk memfilter data tabel di atas.</div>
+      </div>
+      <div>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="filterResetBtn">Reset Semua</button>
+      </div>
+    </div>
+    <div class="row g-2">
+      <div class="col-12 col-md-6 col-lg-4 col-xl-3">
+        <label class="form-label small fw-semibold mb-1">Part Number</label>
+        <select class="form-select form-select-sm column-filter" data-filter-key="part_number"><option value="">Semua part number</option></select>
+      </div>
+      <div class="col-12 col-md-6 col-lg-4 col-xl-3">
+        <label class="form-label small fw-semibold mb-1">Description</label>
+        <select class="form-select form-select-sm column-filter" data-filter-key="description"><option value="">Semua description</option></select>
+      </div>
+      <div class="col-12 col-md-6 col-lg-4 col-xl-2">
+        <label class="form-label small fw-semibold mb-1">Usage Qty</label>
+        <select class="form-select form-select-sm column-filter" data-filter-key="usage_qty"><option value="">Semua qty</option></select>
+      </div>
+      <div class="col-12 col-md-6 col-lg-4 col-xl-2">
+        <label class="form-label small fw-semibold mb-1">Achievement %</label>
+        <select class="form-select form-select-sm column-filter" data-filter-key="ach_persen"><option value="">Semua persen</option></select>
+      </div>
+      <div class="col-12 col-md-6 col-lg-4 col-xl-2">
+        <label class="form-label small fw-semibold mb-1">Variance Amount</label>
+        <select class="form-select form-select-sm column-filter" data-filter-key="variance_amount">
+          <option value="">Semua variance</option>
+          <option value="positive">Positif</option>
+          <option value="negative">Negatif</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
   <div class="pagination-wrap d-flex flex-wrap justify-content-between align-items-center gap-2 mt-3">
     <div class="pagination-info" id="paginationInfo">Menampilkan 0 hingga 0 dari 0 data</div>
     <nav aria-label="Pagination CRP">
@@ -191,10 +247,30 @@
     </nav>
   </div>
 
+  <div class="modal fade" id="graphModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <div>
+            <h5 class="modal-title mb-0" id="graphModalTitle">Grafik Penggunaan</h5>
+            <div class="small text-muted" id="chartSummary">Actual Penggunaan vs Max Kuota</div>
+          </div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div style="height: 420px;">
+            <canvas id="usageQuotaChart"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 
 <script>
 /* ── Hitung tinggi tiap header-row, set CSS variable ── */
@@ -212,17 +288,109 @@ function fixStickyHeaderOffsets() {
 /* ── Logika asli (tidak diubah sama sekali) ── */
 const API_URL    = '<?= base_url('crp/data') ?>';
 const CHART_API_URL = '<?= base_url('crp/chart-usage') ?>';
+const SUMMARY_CHART_API_URL = '<?= base_url('crp/chart-summary-amount') ?>';
 const EXPORT_URL = '<?= base_url('crp/export-excel') ?>';
 const CONTROL_URL = '<?= base_url('crp/control') ?>';
 const CONTROL_UPDATE_EVENT_KEY = 'crp-control-updated';
 let currentPage = 1;
 let pageSize = '100';
+let controlMode = 'all';
 let usageQuotaChart = null;
-let selectedPartNumber = '';
+let summaryAmountChart = null;
+let activeChartPartNumber = '';
+let activeChartMonth = '';
+const columnFilterKeys = ['part_number', 'description', 'usage_qty', 'ach_persen', 'variance_amount'];
+const optionalDataLabelsPlugin = (typeof ChartDataLabels !== 'undefined') ? [ChartDataLabels] : [];
+
+const graphModalElement = document.getElementById('graphModal');
+const graphModal = graphModalElement ? new bootstrap.Modal(graphModalElement) : null;
 
 function formatNumber(n) {
   if (n == null) return '-';
   return parseFloat(n).toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatFilterOptionLabel(key, value) {
+  if (value == null || value === '') {
+    return '';
+  }
+
+  if (key === 'usage_qty') {
+    return formatNumber(value);
+  }
+
+  if (key === 'ach_persen') {
+    return `${formatNumber(value)}%`;
+  }
+
+  return String(value);
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function getActiveColumnFilters() {
+  const filters = {};
+
+  columnFilterKeys.forEach(key => {
+    const element = document.querySelector(`.column-filter[data-filter-key="${key}"]`);
+    if (element && element.value) {
+      filters[key] = element.value;
+    }
+  });
+
+  return filters;
+}
+
+function syncColumnFilters(filterOptions = {}) {
+  columnFilterKeys.forEach(key => {
+    const element = document.querySelector(`.column-filter[data-filter-key="${key}"]`);
+    if (!element || element.disabled) {
+      return;
+    }
+
+    if (key === 'variance_amount') {
+      const currentVariance = element.value;
+      const allowed = new Set(['', 'positive', 'negative']);
+      if (!allowed.has(currentVariance)) {
+        element.value = '';
+      }
+      return;
+    }
+
+    const currentValue = element.value;
+    const options = Array.isArray(filterOptions[key]) ? filterOptions[key] : [];
+    const html = ['<option value="">Semua data</option>'];
+
+    options.forEach(option => {
+      const value = String(option.value ?? '');
+      const label = option.label ?? formatFilterOptionLabel(key, value);
+      html.push(`<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`);
+    });
+
+    element.innerHTML = html.join('');
+
+    if (currentValue && options.some(option => String(option.value ?? '') === currentValue)) {
+      element.value = currentValue;
+    }
+  });
+}
+
+function resetAllColumnFilters() {
+  columnFilterKeys.forEach(key => {
+    const element = document.querySelector(`.column-filter[data-filter-key="${key}"]`);
+    if (element) {
+      element.value = '';
+    }
+  });
+
+  loadData(monthPicker.value, 1);
 }
 
 function updateYearHeaders(year) {
@@ -290,6 +458,7 @@ function renderUsageQuotaChart(payload) {
 
   const labels = payload.labels ?? [];
   const actualUsage = payload.actual_usage ?? [];
+  const actualMonthly = payload.actual_monthly ?? [];
   const maxQuota = payload.max_quota ?? [];
   const partNumber = payload.part_number ?? '-';
   const maxQuotaValue = formatNumber(payload.max_quota_val ?? 0);
@@ -304,7 +473,15 @@ function renderUsageQuotaChart(payload) {
       datasets: [
         {
           type: 'bar',
-          label: 'Actual Penggunaan',
+          label: 'Actual Per Bulan',
+          data: actualMonthly,
+          backgroundColor: 'rgba(100, 150, 200, 0.7)',
+          borderColor: 'rgba(100, 150, 200, 1)',
+          borderWidth: 1,
+        },
+        {
+          type: 'bar',
+          label: 'Actual Kumulatif',
           data: actualUsage,
           backgroundColor: 'rgba(138, 168, 79, 0.85)',
           borderColor: 'rgba(138, 168, 79, 1)',
@@ -324,10 +501,52 @@ function renderUsageQuotaChart(payload) {
         },
       ],
     },
+    plugins: optionalDataLabelsPlugin,
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
+        datalabels: {
+          anchor: (context) => context.dataset.type === 'line' ? 'end' : 'end',
+          align: (context) => context.dataset.type === 'line' ? 'top' : 'top',
+          offset: (context) => context.dataset.type === 'line' ? 6 : 2,
+          clamp: true,
+          clip: false,
+          font: (context) => {
+            if (context.dataset.type === 'line') {
+              return {
+                weight: '600',
+                size: 10,
+              };
+            }
+
+            return {
+              weight: 'bold',
+              size: 11,
+            };
+          },
+          color: (context) => {
+            if (context.datasetIndex === 1) return '#d95f02';
+            if (context.datasetIndex === 2) return '#b71c1c';
+            return '#333';
+          },
+          formatter: (value) => {
+            if (value === null || value === undefined) return '';
+            return Number(value).toLocaleString('id-ID', { 
+              minimumFractionDigits: 0, 
+              maximumFractionDigits: 0 
+            });
+          },
+          display: function(context) {
+            const value = context.dataset.data?.[context.dataIndex];
+            if (value === null || value === undefined) {
+              return false;
+            }
+
+            // Tampilkan label untuk bar dan semua line per bulan.
+            return true;
+          }
+        },
         legend: {
           position: 'bottom',
         },
@@ -353,19 +572,14 @@ function renderUsageQuotaChart(payload) {
 }
 
 function loadUsageChart(month) {
-  if (!selectedPartNumber) {
-    const summary = document.getElementById('chartSummary');
-    if (summary) {
-      summary.textContent = 'Actual Penggunaan vs Max Kuota';
-    }
-    if (usageQuotaChart) {
-      usageQuotaChart.destroy();
-      usageQuotaChart = null;
-    }
+  if (!activeChartPartNumber || !month) {
     return;
   }
 
-  fetch(`${CHART_API_URL}?month=${encodeURIComponent(month)}&part_number=${encodeURIComponent(selectedPartNumber)}`)
+  const requestedPartNumber = activeChartPartNumber;
+  const requestedMonth = month;
+
+  fetch(`${CHART_API_URL}?month=${encodeURIComponent(requestedMonth)}&part_number=${encodeURIComponent(requestedPartNumber)}`)
     .then(r => {
       if (!r.ok) {
         throw new Error(`HTTP ${r.status}`);
@@ -373,6 +587,9 @@ function loadUsageChart(month) {
       return r.json();
     })
     .then(json => {
+      if (requestedPartNumber !== activeChartPartNumber || requestedMonth !== activeChartMonth) {
+        return;
+      }
       renderUsageQuotaChart(json);
     })
     .catch(err => {
@@ -384,10 +601,270 @@ function loadUsageChart(month) {
     });
 }
 
+function loadSummaryAmountChart(month) {
+  fetch(`${SUMMARY_CHART_API_URL}?month=${encodeURIComponent(month)}`)
+    .then(r => {
+      if (!r.ok) {
+        throw new Error(`HTTP ${r.status}`);
+      }
+      return r.json();
+    })
+    .then(json => {
+      renderSummaryAmountChart(json);
+    })
+    .catch(err => {
+      console.error(err);
+      const summary = document.getElementById('summaryAmountText');
+      if (summary) {
+        summary.textContent = `Gagal memuat grafik: ${err.message}`;
+      }
+    });
+}
+
+function renderSummaryAmountChart(payload) {
+  const canvas = document.getElementById('summaryAmountChart');
+  const summary = document.getElementById('summaryAmountText');
+  const conclusion = document.getElementById('summaryAmountConclusion');
+  if (!canvas) {
+    return;
+  }
+
+  if (summaryAmountChart) {
+    summaryAmountChart.destroy();
+  }
+
+  const labels = payload.labels ?? [];
+  const amountCurrent = payload.amount_current ?? [];
+  const amountPrevious = payload.amount_previous ?? [];
+  const amountCurrentNumeric = amountCurrent.map(value => {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    return Number(value);
+  });
+  const year = payload.year ?? new Date().getFullYear();
+  const prevYear = payload.prev_year ?? year - 1;
+  const totalCurr = formatNumber(payload.total_curr_year ?? 0);
+  const totalPrev = formatNumber(payload.total_prev_year ?? 0);
+  const totalCurrValue = Number(payload.total_curr_year ?? 0);
+  const totalPrevValue = Number(payload.total_prev_year ?? 0);
+  const maxAmountLine = labels.length > 0 ? Array(labels.length).fill(totalPrevValue) : [];
+
+  const amountCurrentCumulative = [];
+  let runningCurrentAmount = 0;
+
+  amountCurrentNumeric.forEach(value => {
+    if (value === null) {
+      amountCurrentCumulative.push(null);
+      return;
+    }
+
+    runningCurrentAmount += value;
+    amountCurrentCumulative.push(runningCurrentAmount);
+  });
+
+  const amountPreviousNumeric = amountPrevious.map(value => {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    return Number(value);
+  });
+
+  const amountPreviousCumulative = [];
+  let runningPreviousAmount = 0;
+
+  amountPreviousNumeric.forEach(value => {
+    if (value === null) {
+      amountPreviousCumulative.push(null);
+      return;
+    }
+
+    runningPreviousAmount += value;
+    amountPreviousCumulative.push(runningPreviousAmount);
+  });
+
+  if (summary) {
+    summary.textContent = `${year}: ${totalCurr} | ${prevYear}: ${totalPrev}`;
+  }
+
+  if (conclusion) {
+    const diff = totalCurrValue - totalPrevValue;
+    const absDiff = Math.abs(diff);
+    const diffLabel = formatNumber(absDiff);
+    const percentChange = totalPrevValue === 0 ? null : (absDiff / totalPrevValue) * 100;
+    const percentLabel = percentChange === null
+      ? '-'
+      : `${percentChange.toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+
+    if (diff < 0) {
+      conclusion.textContent = `Kesimpulan ${prevYear}-${year}: Total amount menurun sebesar ${diffLabel} (${percentLabel}) dibanding tahun ${prevYear}.`;
+    } else if (diff > 0) {
+      conclusion.textContent = `Kesimpulan ${prevYear}-${year}: Total amount meningkat sebesar ${diffLabel} (${percentLabel}) dibanding tahun ${prevYear}.`;
+    } else {
+      conclusion.textContent = `Kesimpulan ${prevYear}-${year}: Total amount tidak berubah (0,00%).`;
+    }
+  }
+
+  summaryAmountChart = new Chart(canvas, {
+    data: {
+      labels,
+      datasets: [
+        {
+          type: 'bar',
+          label: `Amount ${year}`,
+          data: amountCurrentNumeric,
+          backgroundColor: 'rgba(54, 162, 235, 0.7)',
+          borderColor: 'rgba(54, 162, 235, 1)',
+          borderWidth: 1,
+        },
+        {
+          type: 'bar',
+          label: `Akumulatif ${year}`,
+          data: amountCurrentCumulative,
+          backgroundColor: 'rgba(138, 168, 79, 0.75)',
+          borderColor: 'rgba(138, 168, 79, 1)',
+          borderWidth: 1,
+        },
+        {
+          type: 'line',
+          label: `Amount ${prevYear}`,
+          data: amountPreviousNumeric,
+          borderColor: '#ff7300',
+          backgroundColor: '#ff7300',
+          pointRadius: 2.5,
+          pointHoverRadius: 4,
+          borderWidth: 2.5,
+          tension: 0.15,
+          fill: false,
+        },
+        {
+          type: 'line',
+          label: `Akumulatif ${prevYear}`,
+          data: amountPreviousCumulative,
+          borderColor: '#eda847',
+          backgroundColor: '#eda847',
+          pointRadius: 2,
+          pointHoverRadius: 4,
+          borderWidth: 2.5,
+          tension: 0.12,
+          borderDash: [4, 3],
+          fill: false,
+        },
+        {
+          type: 'line',
+          label: `Max Amount ${prevYear}`,
+          data: maxAmountLine,
+          borderColor: '#d32f2f',
+          backgroundColor: 'transparent',
+          pointRadius: 0,
+          pointHoverRadius: 0,
+          borderWidth: 2.5,
+          tension: 0,
+          borderDash: [8, 4],
+          fill: false,
+        },
+      ],
+    },
+    plugins: optionalDataLabelsPlugin,
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        datalabels: {
+          anchor: 'end',
+          align: 'top',
+          font: {
+            weight: 'bold',
+            size: 10,
+          },
+          color: function(context) {
+            // Warna berbeda untuk setiap dataset
+            const colors = ['#333', '#333', '#ff7300', '#eda847', '#d32f2f'];
+            return colors[context.datasetIndex] || '#333';
+          },
+          formatter: (value) => {
+            if (value === null || value === undefined) return '';
+            return Number(value).toLocaleString('id-ID', { 
+              minimumFractionDigits: 0, 
+              maximumFractionDigits: 0 
+            });
+          },
+          display: function(context) {
+            // Tampilkan untuk bar (0,1) dan line (2,3), tapi jangan untuk Max line (4)
+            const datasetIndex = context.datasetIndex;
+            return datasetIndex < 4 && context.dataset.data[context.dataIndex] !== null;
+          },
+          clip: false,
+          clamp: true,
+          offset: 6,
+        },
+        legend: {
+          position: 'bottom',
+        },
+        title: {
+          display: false,
+        },
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: {
+            callback: value => Number(value).toLocaleString('id-ID'),
+          },
+        },
+      },
+    },
+  });
+}
+
+function openUsageChart(month, partNumber, description = '-') {
+  if (!partNumber || !month) {
+    return;
+  }
+
+  activeChartPartNumber = partNumber;
+  activeChartMonth = month;
+
+  const title = document.getElementById('graphModalTitle');
+  const summary = document.getElementById('chartSummary');
+
+  if (title) {
+    title.textContent = `Grafik Penggunaan ${partNumber}`;
+  }
+
+  if (summary) {
+    summary.textContent = description && description !== '-'
+      ? `${description} | Periode ${month}`
+      : `Periode ${month}`;
+  }
+
+  if (graphModal) {
+    graphModal.show();
+  }
+
+  loadUsageChart(month);
+}
+
+function renderGraphButton(row) {
+  return `
+    <button
+      type="button"
+      class="btn btn-sm btn-outline-primary btn-graph-toggle"
+      data-part-number="${encodeURIComponent(String(row.PART_NUMBER ?? ''))}"
+      data-description="${encodeURIComponent(String(row.DESCRIPTION ?? '-'))}"
+      title="Lihat grafik penggunaan"
+      aria-label="Lihat grafik penggunaan"
+    >
+      <i class="bi bi-graph-up"></i> Grafik
+    </button>`;
+}
+
 function renderActionButton(row) {
   const controlled = Boolean(row.CONTROLLED);
-  const label = controlled ? 'Batalkan' : 'Tandai Control';
-  const btnClass = controlled ? 'btn-warning' : 'btn-outline-secondary';
+  const btnClass = controlled ? 'btn-success' : 'btn-outline-success';
+  const buttonTitle = controlled ? 'Batalkan kontrol item' : 'Setujui kontrol item';
 
   return `
     <button
@@ -395,17 +872,21 @@ function renderActionButton(row) {
       class="btn btn-sm ${btnClass} btn-control-toggle"
       data-part-number="${row.PART_NUMBER ?? ''}"
       data-controlled="${controlled ? '1' : '0'}"
+      title="${buttonTitle}"
+      aria-label="${buttonTitle}"
     >
-      ${label}
+      <i class="bi bi-check-lg"></i>
     </button>`;
 }
 
 function applyControlState(button, controlled) {
   const row = button.closest('tr');
   button.dataset.controlled = controlled ? '1' : '0';
-  button.classList.toggle('btn-warning', controlled);
-  button.classList.toggle('btn-outline-secondary', !controlled);
-  button.textContent = controlled ? 'Batalkan' : 'Tandai Control';
+  button.classList.toggle('btn-success', controlled);
+  button.classList.toggle('btn-outline-success', !controlled);
+  button.title = controlled ? 'Batalkan kontrol item' : 'Setujui kontrol item';
+  button.setAttribute('aria-label', button.title);
+  button.innerHTML = '<i class="bi bi-check-lg"></i>';
 
   if (row) {
     row.classList.toggle('row-controlled', controlled);
@@ -416,7 +897,7 @@ function setButtonLoading(button, isLoading) {
   button.disabled = isLoading;
   button.innerHTML = isLoading
     ? '<span class="spinner-border spinner-border-sm"></span>'
-    : button.textContent;
+    : '<i class="bi bi-check-lg"></i>';
 }
 
 function updateControlStatus(button) {
@@ -428,7 +909,7 @@ function updateControlStatus(button) {
     return;
   }
 
-  const previousLabel = button.textContent;
+  const previousControlled = button.dataset.controlled === '1';
   setButtonLoading(button, true);
 
   fetch(CONTROL_URL, {
@@ -461,17 +942,13 @@ function updateControlStatus(button) {
       }));
     })
     .catch(err => {
-      button.textContent = previousLabel;
+      applyControlState(button, previousControlled);
       console.error(err);
       alert(`Gagal mengubah status control: ${err.message}`);
     })
     .finally(() => {
       button.disabled = false;
-      if (button.dataset.controlled === '1') {
-        button.innerHTML = 'Batalkan';
-      } else {
-        button.innerHTML = 'Tandai Control';
-      }
+      button.innerHTML = '<i class="bi bi-check-lg"></i>';
     });
 }
 
@@ -561,9 +1038,21 @@ function loadData(month, page = 1) {
   updateExportLink(month);
 
   const tbody = document.querySelector('#tblCrp tbody');
-  tbody.innerHTML = '<tr><td colspan="9" class="text-center py-3"><span class="spinner-border spinner-border-sm me-2"></span>Loading data...  </td></tr>';
+  tbody.innerHTML = '<tr><td colspan="11" class="text-center py-3"><span class="spinner-border spinner-border-sm me-2"></span>Loading data...  </td></tr>';
 
-  fetch(`${API_URL}?month=${encodeURIComponent(month)}&page=${page}&limit=${encodeURIComponent(pageSize)}`)
+  const activeFilters = getActiveColumnFilters();
+  const queryParams = new URLSearchParams({
+    month,
+    page,
+    limit: pageSize,
+    control_mode: controlMode,
+  });
+
+  Object.entries(activeFilters).forEach(([key, value]) => {
+    queryParams.set(`filter_${key}`, value);
+  });
+
+  fetch(`${API_URL}?${queryParams.toString()}`)
     .then(r => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
@@ -572,18 +1061,26 @@ function loadData(month, page = 1) {
       const rows = json.data ?? [];
       const meta = json.pagination ?? {};
       const year = parseInt(json.year ?? month.split('-')[0]);
+      controlMode = String(json.control_mode ?? controlMode);
       updateYearHeaders(year);
+      syncColumnFilters(json.filters ?? {});
       updatePagination(meta);
 
       syncPartSelector(rows);
       loadUsageChart(month);
+  loadSummaryAmountChart(month);
 
       if (rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">No data available</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="text-center text-muted py-3">No data available</td></tr>';
         return;
       }
 
-      tbody.innerHTML = rows.map(d => `
+      tbody.innerHTML = rows.map(d => {
+        const prevAmount = Number(d['AMOUNT_' + (year - 1)] ?? 0);
+        const currentAmount = Number(d.ACH_AMOUNT ?? 0);
+        const varianceAmount = prevAmount - currentAmount;
+
+        return `
         <tr class="${d.CONTROLLED ? 'row-controlled' : ''}">
           <td class="text-center">${d.NO}</td>
           <td>${d.PART_NUMBER ?? '-'}</td>
@@ -593,11 +1090,14 @@ function loadData(month, page = 1) {
           <td class="text-end">${formatNumber(d.TARGET_5PCT)}</td>
           <td class="text-end">${formatNumber(d.ACH_AMOUNT)}</td>
           <td class="text-center">${d.ACH_PERSEN ?? '-'}</td>
+          <td class="text-end fw-semibold">${formatNumber(d.VARIANCE_AMOUNT ?? varianceAmount)}</td>
+          <td class="text-center">${renderGraphButton(d)}</td>
           <td class="text-center">${renderActionButton(d)}</td>
-        </tr>`).join('');
+        </tr>`;
+      }).join('');
     })
     .catch(err => {
-      tbody.innerHTML = `<tr><td colspan="9" class="text-center text-danger py-3">Failed to load data: ${err.message}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="11" class="text-center text-danger py-3">Failed to load data: ${err.message}</td></tr>`;
       updatePagination({ page: 1, per_page: 0, total: 0, total_pages: 1, has_prev: false, has_next: false, is_all: pageSize === 'all' });
       console.error(err);
     });
@@ -605,16 +1105,27 @@ function loadData(month, page = 1) {
 
 const monthPicker = document.getElementById('chart_month');
 const showLimit = document.getElementById('show_limit');
-const partSelector = document.getElementById('part_selector');
 monthPicker.addEventListener('change', () => loadData(monthPicker.value, 1));
 showLimit.addEventListener('change', () => {
-  pageSize = showLimit.value;
+  if (showLimit.value === 'controlled') {
+    controlMode = 'controlled';
+    pageSize = 'all';
+  } else {
+    controlMode = 'all';
+    pageSize = showLimit.value;
+  }
+
   loadData(monthPicker.value, 1);
 });
-partSelector.addEventListener('change', event => {
-  selectedPartNumber = String(event.target.value ?? '');
-  loadUsageChart(monthPicker.value);
+document.addEventListener('change', event => {
+  const filter = event.target.closest('.column-filter[data-filter-key]');
+  if (!filter || filter.disabled) {
+    return;
+  }
+
+  loadData(monthPicker.value, 1);
 });
+document.getElementById('filterResetBtn').addEventListener('click', resetAllColumnFilters);
 document.getElementById('paginationNav').addEventListener('click', event => {
   const button = event.target.closest('button[data-page]');
   if (!button || button.closest('.disabled')) {
@@ -629,6 +1140,16 @@ document.getElementById('paginationNav').addEventListener('click', event => {
   loadData(monthPicker.value, targetPage);
 });
 document.querySelector('#tblCrp tbody').addEventListener('click', event => {
+  const chartButton = event.target.closest('.btn-graph-toggle');
+  if (chartButton) {
+    openUsageChart(
+      monthPicker.value,
+      decodeURIComponent(String(chartButton.dataset.partNumber ?? '')),
+      decodeURIComponent(String(chartButton.dataset.description ?? '-'))
+    );
+    return;
+  }
+
   const button = event.target.closest('.btn-control-toggle');
   if (!button) {
     return;
