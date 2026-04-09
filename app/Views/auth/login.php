@@ -219,10 +219,10 @@
 
         </form>
 
-        <div class="text-center footer-text mt-5">
+        <!-- <div class="text-center footer-text mt-5">
           &copy; <?= date('Y') ?> PT. CBI. All rights reserved.<br>
           Versi 1.0.0
-        </div>
+        </div> -->
 
       </div>
     </div>

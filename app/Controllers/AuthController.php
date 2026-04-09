@@ -3,6 +3,7 @@
 namespace App\Controllers;
 
 use App\Models\M_Login;
+use Config\Database;
 use Firebase\JWT\JWT;
 
 class AuthController extends BaseController
@@ -10,6 +11,8 @@ class AuthController extends BaseController
     private const KODE_JABATAN_ALLOWED = [1, 2, 3, 4, 5, 6, 7];
     private const KODE_JABATAN_EDIT_ACCESS = [1, 2, 3, 4, 5, 6];
     private const KODE_JABATAN_MONITOR_ACCESS = [1, 2, 3, 4, 5, 6, 7];
+    private const CRP_ACCESS_DB_GROUP = 'sparepart_price';
+    private const CRP_ACCESS_TABLE = 'crp_admin_npk_access';
 
     protected M_Login $loginModel;
 
@@ -68,14 +71,16 @@ class AuthController extends BaseController
             $name = $apiUsername;
         }
 
-        $canEditCrp = in_array($kodeJabatan, self::KODE_JABATAN_EDIT_ACCESS, true);
+        $npk = $this->resolveSessionNpk($authResult, $apiUsername);
+        $isWhitelistedNpk = $this->isCrpNpkAllowed($npk);
+        $canEditCrp = in_array($kodeJabatan, self::KODE_JABATAN_EDIT_ACCESS, true) && $isWhitelistedNpk;
         $canAccessMonitorUser = in_array($kodeJabatan, self::KODE_JABATAN_MONITOR_ACCESS, true);
         $jabatan = trim((string) ($authResult['jabatan'] ?? ''));
         if ($jabatan === '') {
             $jabatan = 'Pengguna';
         }
         $sessionToken = $this->createSessionToken([
-            'npk'            => $authResult['npk'] ?? null,
+            'npk'            => $npk !== '' ? $npk : null,
             'nama'           => $name,
             'jabatan'        => $jabatan,
             'kode_jabatan'   => $kodeJabatan,
@@ -107,7 +112,7 @@ class AuthController extends BaseController
             'can_access_crp' => $canEditCrp,
             'can_edit_crp'   => $canEditCrp,
             'can_access_monitor_user' => $canAccessMonitorUser,
-            'npk'            => $authResult['npk'] ?? null,
+            'npk'            => $npk !== '' ? $npk : null,
             'kode_jabatan'   => $kodeJabatan,
             'departement'    => $authResult['departement'] ?? null,
             'id_departement' => $authResult['id_departement'] ?? null,
@@ -166,6 +171,80 @@ class AuthController extends BaseController
                 'message' => 'Gagal membuat JWT token sesi.',
             ];
         }
+    }
+
+    private function isCrpNpkAllowed(string $npk): bool
+    {
+        if ($npk === '') {
+            return false;
+        }
+
+        try {
+            $db = Database::connect(self::CRP_ACCESS_DB_GROUP);
+            $row = $db->table(self::CRP_ACCESS_TABLE)
+                ->select('npk')
+                ->where('is_active', 1)
+                ->get()
+                ->getResultArray();
+
+            if ($row === []) {
+                return false;
+            }
+
+            $candidate = $this->canonicalizeNpk($npk);
+            foreach ($row as $item) {
+                $allowedNpk = $this->canonicalizeNpk((string) ($item['npk'] ?? ''));
+                if ($allowedNpk !== '' && $allowedNpk === $candidate) {
+                    return true;
+                }
+            }
+
+            return false;
+        } catch (\Throwable $e) {
+            log_message('error', 'Gagal cek akses CRP by NPK ({npk}): {message}', [
+                'npk' => $npk,
+                'message' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    private function normalizeNpk(string $npk): string
+    {
+        return strtoupper(trim($npk));
+    }
+
+    private function resolveSessionNpk(array $authResult, string $fallbackUsername): string
+    {
+        $npk = $this->normalizeNpk((string) ($authResult['npk'] ?? ''));
+
+        if ($npk !== '') {
+            return $npk;
+        }
+
+        $fallbackUsername = $this->normalizeNpk($fallbackUsername);
+        if ($fallbackUsername !== '' && ctype_digit($fallbackUsername)) {
+            return $fallbackUsername;
+        }
+
+        return '';
+    }
+
+    private function canonicalizeNpk(string $npk): string
+    {
+        $normalized = $this->normalizeNpk($npk);
+        if ($normalized === '') {
+            return '';
+        }
+
+        if (!ctype_digit($normalized)) {
+            return $normalized;
+        }
+
+        $trimmed = ltrim($normalized, '0');
+
+        return $trimmed === '' ? '0' : $trimmed;
     }
 
     public function logout()

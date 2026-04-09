@@ -16,7 +16,7 @@ $routes->get( 'logout', 'AuthController::logout',   ['namespace' => 'App\Control
 $routes->get('home', 'Home::index', ['namespace' => 'App\Controllers', 'filter' => 'auth']);
 
 // ── CRP Dashboard (hanya level 1-6) ──
-$routes->group('crp', ['namespace' => 'App\Controllers', 'filter' => 'role:1,2,3,4,5,6'], function ($routes) {
+$routes->group('crp', ['namespace' => 'App\Controllers', 'filter' => ['role:1,2,3,4,5,6', 'crpaccess']], function ($routes) {
     $routes->get('/',            'CrpController::index');       // GET /crp
     $routes->get('data',         'CrpController::getData');     // GET /crp/data?month=2026-03
     $routes->get('chart-usage',  'CrpController::getUsageChartData');

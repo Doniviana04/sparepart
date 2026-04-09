@@ -3,6 +3,7 @@
 namespace Config;
 
 use App\Filters\AuthFilter;
+use App\Filters\CrpAccessFilter;
 use App\Filters\RoleFilter;
 use CodeIgniter\Config\Filters as BaseFilters;
 use CodeIgniter\Filters\Cors;
@@ -39,6 +40,7 @@ class Filters extends BaseFilters
         // Custom auth filters
         'auth'          => AuthFilter::class,
         'role'          => RoleFilter::class,
+        'crpaccess'     => CrpAccessFilter::class,
     ];
 
     /**

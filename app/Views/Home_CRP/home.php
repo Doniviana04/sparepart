@@ -190,7 +190,7 @@
   $jabatan      = (int) (session()->get('kode_jabatan') ?? session()->get('level') ?? 0);
   $name         = session()->get('name') ?? 'User';
   $username     = session()->get('username') ?? '';
-  $hasCrpAccess = in_array($jabatan, [1, 2, 3, 4, 5, 6], true);
+  $hasCrpAccess = (bool) (session()->get('can_access_crp') ?? false);
   $displayRole  = trim((string) (session()->get('jabatan') ?? ''));
   if ($displayRole === '') {
     $displayRole = 'Pengguna';
