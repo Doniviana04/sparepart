@@ -89,8 +89,6 @@
 </head>
 <body>
 
-<?php $canViewAllMonitorData = (bool) (session()->get('can_access_crp') ?? false); ?>
-
 <div class="container-fluid py-4">
 
 	<!-- Back navigation -->
@@ -108,23 +106,22 @@
 			<input type="month" class="form-control form-control-sm" id="chart_month" value="<?= date('Y-m') ?>">
 		</div>
 		<div>
-			<label class="form-label fw-semibold small mb-1">Show Data	</label>
-			<select class="form-select form-select-sm" id="show_limit">
-				<option value="50">50</option>
-				<option value="100" selected>100</option>
-				<option value="200">200</option>
-				<option value="all">Semua data</option>
-			</select>
-		</div>
-		<?php if ($canViewAllMonitorData): ?>
-		<div>
 			<label class="form-label fw-semibold small mb-1">Filter Notifikasi</label>
-			<select class="form-select form-select-sm" id="view_mode">
-				<option value="alert" selected>Harap lebih hemat</option>
-				<option value="all">Semua item</option>
+			<select class="form-select form-select-sm" id="notification_filter">
+				<option value="all" selected>Semua item</option>
+				<option value="ok">OK</option>
+				<option value="alert">Harap lebih hemat</option>
+				<option value="controlled">Sudah dikontrol</option>
 			</select>
 		</div>
-		<?php endif; ?>
+		<div class="ms-auto d-flex flex-wrap align-items-end gap-3">
+			<div>
+				<label class="form-label fw-semibold small mb-1">Filter Part Number</label>
+				<select class="form-select form-select-sm" id="part_number_filter">
+					<option value="">Semua part number</option>
+				</select>
+			</div>
+		</div>
 	</div>
 
 	<div class="card card-custom">
@@ -201,12 +198,14 @@ function fixStickyHeaderOffsets() {
 
 const API_URL = '<?= base_url('monitor-user/data') ?>';
 const CHART_API_URL = '<?= base_url('monitor-user/chart-usage') ?>';
-const CAN_VIEW_ALL = <?= json_encode($canViewAllMonitorData) ?>;
+const CONTROL_UPDATE_EVENT_KEY = 'crp-control-updated';
 const AUTO_REFRESH_INTERVAL_MS = 10000;
 let autoRefreshTimer = null;
 let currentPage = 1;
-let pageSize = '100';
-let viewMode = 'alert';
+const pageSize = '100';
+let notificationFilter = 'all';
+let selectedPartNumber = '';
+let canAccessCrp = false;
 let usageChart = null;
 let activeChartPartNumber = '';
 let activeChartMonth = '';
@@ -440,6 +439,43 @@ function renderPaginationNav(page, totalPages, hasPrev, hasNext, isAll) {
 	nav.innerHTML = buttons.join('');
 }
 
+function updatePartNumberFilterOptions(options = [], selected = '') {
+	const partNumberSelect = document.getElementById('part_number_filter');
+	if (!partNumberSelect) {
+		return;
+	}
+
+	const list = Array.isArray(options) ? options : [];
+	const selectedValue = String(selected || '');
+	const optionHtml = ['<option value="">Semua part number</option>'];
+
+	list.forEach(partNumber => {
+		const value = String(partNumber || '').trim();
+		if (value === '') {
+			return;
+		}
+
+		const isSelected = value === selectedValue ? ' selected' : '';
+		optionHtml.push(`<option value="${value}"${isSelected}>${value}</option>`);
+	});
+
+	partNumberSelect.innerHTML = optionHtml.join('');
+	partNumberSelect.value = list.includes(selectedValue) ? selectedValue : '';
+}
+
+function updateNotificationFilterOptions(isAdmin = false) {
+	const notificationSelect = document.getElementById('notification_filter');
+	if (!notificationSelect) {
+		return;
+	}
+
+	const controlledOption = notificationSelect.querySelector('option[value="controlled"]');
+	if (controlledOption) {
+		controlledOption.disabled = !isAdmin;
+		controlledOption.style.display = isAdmin ? 'block' : 'none';
+	}
+}
+
 function loadData(month, page = 1, options = {}) {
 	const showLoading = options.showLoading !== false;
 	const selectedYear = parseInt(month.split('-')[0], 10);
@@ -452,7 +488,7 @@ function loadData(month, page = 1, options = {}) {
 		tbody.innerHTML = '<tr><td colspan="9" class="text-center py-3"><span class="spinner-border spinner-border-sm me-2"></span>Loading data...</td></tr>';
 	}
 
-	fetch(`${API_URL}?month=${encodeURIComponent(month)}&page=${page}&limit=${encodeURIComponent(pageSize)}&mode=${encodeURIComponent(viewMode)}`)
+	fetch(`${API_URL}?month=${encodeURIComponent(month)}&page=${page}&limit=${encodeURIComponent(pageSize)}&notification=${encodeURIComponent(notificationFilter)}&part_number=${encodeURIComponent(selectedPartNumber)}`)
 		.then(r => {
 			if (!r.ok) throw new Error(`HTTP ${r.status}`);
 			return r.json();
@@ -461,11 +497,13 @@ function loadData(month, page = 1, options = {}) {
 			const rows = json.data ?? [];
 			const meta = json.pagination ?? {};
 			const year = parseInt(json.year ?? month.split('-')[0], 10);
+			canAccessCrp = Boolean(json.can_access_crp ?? false);
+			selectedPartNumber = String(json.selected_part_number ?? selectedPartNumber ?? '');
+			updatePartNumberFilterOptions(json.part_number_options ?? [], selectedPartNumber);
+			updateNotificationFilterOptions(canAccessCrp);
 			updateYearHeaders(year);
 			updatePagination(meta);
-			const emptyMessage = viewMode === 'all'
-				? 'No data available'
-				: 'Tidak ada item yang memerlukan control';
+			const emptyMessage = 'Tidak ada data monitor untuk filter yang dipilih';
 
 			if (rows.length === 0) {
 				tbody.innerHTML = `<tr><td colspan="9" class="text-center text-muted py-3">${emptyMessage}</td></tr>`;
@@ -481,9 +519,9 @@ function loadData(month, page = 1, options = {}) {
 					<td class="text-end">${formatNumber(d.UPTODATE_USAGE)}</td>
 					<td class="text-end">${formatNumber(d.SISA_AKTUAL)}</td>
 					<td class="text-end">${formatNumber(d.SISA_IDEAL)}</td>
-						<td class="text-center">${renderGraphButton(d)}</td>
+					<td class="text-center">${renderGraphButton(d)}</td>
 					<td class="text-center">
-						<span class="badge ${d.KETERANGAN === 'Harap lebih hemat' ? 'bg-warning text-dark' : 'bg-secondary'} rounded-pill px-3 py-2">
+						<span class="badge ${d.KETERANGAN === 'Harap lebih hemat' ? 'bg-warning text-dark' : 'bg-success'} rounded-pill px-3 py-2">
 							${d.KETERANGAN ?? '-'}
 						</span>
 					</td>
@@ -491,7 +529,7 @@ function loadData(month, page = 1, options = {}) {
 		})
 		.catch(err => {
 			tbody.innerHTML = `<tr><td colspan="9" class="text-center text-danger py-3">Failed to load data: ${err.message}</td></tr>`;
-			updatePagination({ page: 1, per_page: 0, total: 0, total_pages: 1, has_prev: false, has_next: false, is_all: pageSize === 'all' });
+			updatePagination({ page: 1, per_page: 0, total: 0, total_pages: 1, has_prev: false, has_next: false, is_all: false });
 			console.error(err);
 		});
 }
@@ -517,20 +555,23 @@ function setupAutoRefresh() {
 }
 
 const monthPicker = document.getElementById('chart_month');
-const showLimit = document.getElementById('show_limit');
-const viewModeSelect = document.getElementById('view_mode');
+const notificationSelect = document.getElementById('notification_filter');
+const partNumberSelect = document.getElementById('part_number_filter');
 monthPicker.addEventListener('change', () => loadData(monthPicker.value, 1));
-showLimit.addEventListener('change', () => {
-	pageSize = showLimit.value;
-	loadData(monthPicker.value, 1);
-});
-if (CAN_VIEW_ALL && viewModeSelect) {
-	viewMode = viewModeSelect.value || 'alert';
-	viewModeSelect.addEventListener('change', () => {
-		viewMode = viewModeSelect.value || 'alert';
+if (notificationSelect) {
+	notificationFilter = notificationSelect.value || 'all';
+	notificationSelect.addEventListener('change', () => {
+		notificationFilter = notificationSelect.value || 'all';
 		loadData(monthPicker.value, 1);
 	});
 }
+if (partNumberSelect) {
+	partNumberSelect.addEventListener('change', () => {
+		selectedPartNumber = partNumberSelect.value || '';
+		loadData(monthPicker.value, 1);
+	});
+}
+
 document.getElementById('paginationNav').addEventListener('click', event => {
 	const button = event.target.closest('button[data-page]');
 	if (!button || button.closest('.disabled')) {
@@ -561,7 +602,28 @@ document.addEventListener('visibilitychange', () => {
 		refreshFromCurrentSelection();
 	}
 });
+window.addEventListener('storage', event => {
+	if (event.key !== CONTROL_UPDATE_EVENT_KEY || !event.newValue) {
+		return;
+	}
+
+	let payload;
+	try {
+		payload = JSON.parse(event.newValue);
+	} catch (err) {
+		console.warn('Payload update control tidak valid.', err);
+		return;
+	}
+
+	const eventMonth = String(payload.month ?? '').trim();
+	if (eventMonth !== '' && eventMonth !== monthPicker.value) {
+		return;
+	}
+
+	refreshFromCurrentSelection();
+});
 window.addEventListener('load', () => {
+	updateNotificationFilterOptions(canAccessCrp);
 	loadData(monthPicker.value, 1);
 	setupAutoRefresh();
 	requestAnimationFrame(fixStickyHeaderOffsets);

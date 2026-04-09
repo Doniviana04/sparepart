@@ -30,27 +30,47 @@ class MonitorUserController extends BaseController
 
 	/**
 	 * Endpoint JSON utama monitor user.
-	 * User produksi hanya melihat item yang memerlukan control.
-	 * Admin dapat memilih filter alert/all, default tetap alert.
+	 * - Admin dan user biasa: hanya melihat part number yang sudah diberi control.
 	 *
 	 * Query:
 	 * - month (opsional) format YYYY-MM
-	 * - mode (opsional): alert | all
+	 * - notification (opsional): all | alert | ok
+	 * - part_number (opsional): filter part number spesifik
 	 */
 	public function getData()
 	{
 		@set_time_limit(300);
 
 		[$year, $month] = $this->resolvePeriod();
-		$canViewAll = $this->canViewAllMonitorData();
-		$mode = $this->resolveMonitorFilter($canViewAll);
+		$notification = $this->resolveNotificationFilter();
+		$partNumberFilter = $this->normalizePartNumber((string) ($this->request->getGet('part_number') ?? ''));
 
 		$result = $this->buildMonitorData($year, $month);
+		$controlMarks = $this->getControlMarksByPeriod($year, $month);
 
-		if ($mode !== 'all') {
+		if ($controlMarks === []) {
+			$result = [];
+		} else {
 			$result = array_values(array_filter(
 				$result,
-				static fn(array $row): bool => ($row['KETERANGAN'] ?? '') === 'Harap lebih hemat'
+				static fn(array $row): bool => isset($controlMarks[strtoupper(trim((string) ($row['PART_NUMBER'] ?? '')))])
+			));
+		}
+
+		$partNumberOptions = $this->buildPartNumberOptions($result);
+
+		if ($partNumberFilter !== '') {
+			$result = array_values(array_filter(
+				$result,
+				static fn(array $row): bool => strtoupper(trim((string) ($row['PART_NUMBER'] ?? ''))) === $partNumberFilter
+			));
+		}
+
+		if ($notification !== 'all') {
+			$statusLabel = $notification === 'ok' ? 'OK' : 'Harap lebih hemat';
+			$result = array_values(array_filter(
+				$result,
+				static fn(array $row): bool => ($row['KETERANGAN'] ?? '') === $statusLabel
 			));
 		}
 
@@ -63,8 +83,9 @@ class MonitorUserController extends BaseController
 			'data'        => $pagedData['data'],
 			'year'        => $year,
 			'month'       => $month,
-			'mode'        => $mode,
-			'can_view_all' => $canViewAll,
+			'notification' => $notification,
+			'selected_part_number' => $partNumberFilter,
+			'part_number_options' => $partNumberOptions,
 			'pagination'   => $pagedData['meta'],
 		]);
 	}
@@ -153,25 +174,33 @@ class MonitorUserController extends BaseController
 	}
 
 	/**
-	 * Admin (level 1-6) diizinkan melihat semua data monitor.
+	 * Memvalidasi filter notifikasi dari query string.
 	 */
-	private function canViewAllMonitorData(): bool
+	private function resolveNotificationFilter(): string
 	{
-		return (bool) (session()->get('can_access_crp') ?? false);
+		$notification = strtolower(trim((string) ($this->request->getGet('notification') ?? 'all')));
+
+		return in_array($notification, ['all', 'alert', 'ok', 'controlled'], true) ? $notification : 'all';
 	}
 
 	/**
-	 * Memvalidasi filter monitor dari query string.
+	 * Menyusun opsi part number unik untuk dropdown filter.
 	 */
-	private function resolveMonitorFilter(bool $canViewAll): string
+	private function buildPartNumberOptions(array $rows): array
 	{
-		if (!$canViewAll) {
-			return 'alert';
+		$options = [];
+
+		foreach ($rows as $row) {
+			$partNumber = strtoupper(trim((string) ($row['PART_NUMBER'] ?? '')));
+			if ($partNumber !== '') {
+				$options[$partNumber] = true;
+			}
 		}
 
-		$mode = strtolower(trim((string) ($this->request->getGet('mode') ?? 'alert')));
+		$partNumbers = array_keys($options);
+		sort($partNumbers);
 
-		return in_array($mode, ['alert', 'all'], true) ? $mode : 'alert';
+		return $partNumbers;
 	}
 
 	/**
@@ -204,6 +233,41 @@ class MonitorUserController extends BaseController
 		$month = max(1, min(12, (int) $matches[2]));
 
 		return [$year, $month];
+	}
+
+	/**
+	 * Mengambil daftar part yang ditandai control untuk periode tertentu.
+	 */
+	private function getControlMarksByPeriod(int $year, int $month): array
+	{
+		$period = sprintf('%04d-%02d', $year, $month);
+
+		try {
+			$db = Database::connect('sparepart_price');
+			$rows = $db->table('crp_control_marks')
+				->select('part_number')
+				->where('period_month', $period)
+				->where('controlled', 1)
+				->get()
+				->getResultArray();
+		} catch (\Throwable $e) {
+			log_message('error', 'Gagal membaca control marks monitor user ({period}): {message}', [
+				'period'  => $period,
+				'message' => $e->getMessage(),
+			]);
+
+			return [];
+		}
+
+		$marks = [];
+		foreach ($rows as $row) {
+			$partNumber = $this->normalizePartNumber((string) ($row['part_number'] ?? ''));
+			if ($partNumber !== '') {
+				$marks[$partNumber] = true;
+			}
+		}
+
+		return $marks;
 	}
 
 	/**

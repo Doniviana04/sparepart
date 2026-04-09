@@ -292,6 +292,8 @@ const SUMMARY_CHART_API_URL = '<?= base_url('crp/chart-summary-amount') ?>';
 const EXPORT_URL = '<?= base_url('crp/export-excel') ?>';
 const CONTROL_URL = '<?= base_url('crp/control') ?>';
 const CONTROL_UPDATE_EVENT_KEY = 'crp-control-updated';
+const AUTO_REFRESH_INTERVAL_MS = 120000;
+let autoRefreshTimer = null;
 let currentPage = 1;
 let pageSize = '100';
 let controlMode = 'all';
@@ -1157,10 +1159,44 @@ document.querySelector('#tblCrp tbody').addEventListener('click', event => {
 
   updateControlStatus(button);
 });
+
+function refreshFromCurrentSelection() {
+  if (!monthPicker.value) {
+    return;
+  }
+
+  loadData(monthPicker.value, currentPage);
+}
+
+function setupAutoRefresh() {
+  if (autoRefreshTimer !== null) {
+    clearInterval(autoRefreshTimer);
+  }
+
+  autoRefreshTimer = window.setInterval(() => {
+    if (!document.hidden) {
+      refreshFromCurrentSelection();
+    }
+  }, AUTO_REFRESH_INTERVAL_MS);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    refreshFromCurrentSelection();
+  }
+});
+
+window.addEventListener('storage', event => {
+  if (event.key === CONTROL_UPDATE_EVENT_KEY && event.newValue) {
+    refreshFromCurrentSelection();
+  }
+});
+
 window.addEventListener('load', () => {
   loadData(monthPicker.value, 1);
   /* Hitung offset setelah browser render header */
   requestAnimationFrame(fixStickyHeaderOffsets);
+  setupAutoRefresh();
 });
 </script>
 

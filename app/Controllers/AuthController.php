@@ -11,6 +11,7 @@ class AuthController extends BaseController
     private const KODE_JABATAN_ALLOWED = [1, 2, 3, 4, 5, 6, 7];
     private const KODE_JABATAN_EDIT_ACCESS = [1, 2, 3, 4, 5, 6];
     private const KODE_JABATAN_MONITOR_ACCESS = [1, 2, 3, 4, 5, 6, 7];
+    // Tabel whitelist NPK untuk akses admin CRP.
     private const CRP_ACCESS_DB_GROUP = 'sparepart_price';
     private const CRP_ACCESS_TABLE = 'crp_admin_npk_access';
 
@@ -71,6 +72,7 @@ class AuthController extends BaseController
             $name = $apiUsername;
         }
 
+        // Akses admin CRP wajib lolos kombinasi jabatan + NPK whitelist.
         $npk = $this->resolveSessionNpk($authResult, $apiUsername);
         $isWhitelistedNpk = $this->isCrpNpkAllowed($npk);
         $canEditCrp = in_array($kodeJabatan, self::KODE_JABATAN_EDIT_ACCESS, true) && $isWhitelistedNpk;
@@ -175,6 +177,7 @@ class AuthController extends BaseController
 
     private function isCrpNpkAllowed(string $npk): bool
     {
+        // Jika NPK kosong maka otomatis tidak punya akses admin CRP.
         if ($npk === '') {
             return false;
         }
@@ -217,12 +220,14 @@ class AuthController extends BaseController
 
     private function resolveSessionNpk(array $authResult, string $fallbackUsername): string
     {
+        // Prioritas NPK dari API login.
         $npk = $this->normalizeNpk((string) ($authResult['npk'] ?? ''));
 
         if ($npk !== '') {
             return $npk;
         }
 
+        // Fallback: gunakan username jika formatnya numerik.
         $fallbackUsername = $this->normalizeNpk($fallbackUsername);
         if ($fallbackUsername !== '' && ctype_digit($fallbackUsername)) {
             return $fallbackUsername;
@@ -233,6 +238,7 @@ class AuthController extends BaseController
 
     private function canonicalizeNpk(string $npk): string
     {
+        // Samakan format NPK (contoh 0485 dan 485 dianggap sama).
         $normalized = $this->normalizeNpk($npk);
         if ($normalized === '') {
             return '';
