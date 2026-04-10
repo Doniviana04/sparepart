@@ -137,7 +137,7 @@
         <label class="form-label fw-semibold small mb-1">Summary Amount (Semua Part Number)</label>
         <div class="small text-muted" id="summaryAmountText">Actual Amount vs Amount Tahun Lalu</div>
       </div>
-      <div style="height: 320px;">
+      <div style="height: 460px;">
         <canvas id="summaryAmountChart"></canvas>
       </div>
       <div class="mt-3 pt-2 border-top small" id="summaryAmountConclusion">Kesimpulan: -</div>
@@ -651,7 +651,6 @@ function renderSummaryAmountChart(payload) {
   const totalPrev = formatNumber(payload.total_prev_year ?? 0);
   const totalCurrValue = Number(payload.total_curr_year ?? 0);
   const totalPrevValue = Number(payload.total_prev_year ?? 0);
-  const maxAmountLine = labels.length > 0 ? Array(labels.length).fill(totalPrevValue) : [];
 
   const amountCurrentCumulative = [];
   let runningCurrentAmount = 0;
@@ -723,22 +722,22 @@ function renderSummaryAmountChart(payload) {
         },
         {
           type: 'bar',
-          label: `Akumulatif ${year}`,
-          data: amountCurrentCumulative,
-          backgroundColor: 'rgba(138, 168, 79, 0.75)',
-          borderColor: 'rgba(138, 168, 79, 1)',
+          label: `Amount ${prevYear}`,
+          data: amountPreviousNumeric,
+          backgroundColor: 'rgba(255, 115, 0, 0.35)',
+          borderColor: '#ff7300',
           borderWidth: 1,
         },
         {
           type: 'line',
-          label: `Amount ${prevYear}`,
-          data: amountPreviousNumeric,
-          borderColor: '#ff7300',
-          backgroundColor: '#ff7300',
+          label: `Akumulatif ${year}`,
+          data: amountCurrentCumulative,
+          borderColor: '#1f7a4c',
+          backgroundColor: '#1f7a4c',
           pointRadius: 2.5,
           pointHoverRadius: 4,
           borderWidth: 2.5,
-          tension: 0.15,
+          tension: 0.12,
           fill: false,
         },
         {
@@ -752,19 +751,6 @@ function renderSummaryAmountChart(payload) {
           borderWidth: 2.5,
           tension: 0.12,
           borderDash: [4, 3],
-          fill: false,
-        },
-        {
-          type: 'line',
-          label: `Max Amount ${prevYear}`,
-          data: maxAmountLine,
-          borderColor: '#d32f2f',
-          backgroundColor: 'transparent',
-          pointRadius: 0,
-          pointHoverRadius: 0,
-          borderWidth: 2.5,
-          tension: 0,
-          borderDash: [8, 4],
           fill: false,
         },
       ],
@@ -783,7 +769,7 @@ function renderSummaryAmountChart(payload) {
           },
           color: function(context) {
             // Warna berbeda untuk setiap dataset
-            const colors = ['#333', '#333', '#ff7300', '#eda847', '#d32f2f'];
+            const colors = ['#333', '#ff7300', '#1f7a4c', '#eda847'];
             return colors[context.datasetIndex] || '#333';
           },
           formatter: (value) => {
@@ -794,9 +780,7 @@ function renderSummaryAmountChart(payload) {
             });
           },
           display: function(context) {
-            // Tampilkan untuk bar (0,1) dan line (2,3), tapi jangan untuk Max line (4)
-            const datasetIndex = context.datasetIndex;
-            return datasetIndex < 4 && context.dataset.data[context.dataIndex] !== null;
+            return context.dataset.data[context.dataIndex] !== null;
           },
           clip: false,
           clamp: true,

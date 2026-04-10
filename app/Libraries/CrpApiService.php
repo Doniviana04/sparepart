@@ -14,10 +14,10 @@ class CrpApiService
     public function __construct()
     {
         $this->config = config(ApiCrp::class);
-        $this->adjustmentEndpoint = $this->resolveAdjustmentEndpoint((string) $this->config->baseURL);
+        $this->adjustmentEndpoint = env('api.baseURL');
 
         $this->client = \Config\Services::curlrequest([
-            'timeout'     => $this->config->timeout,
+            'timeout'     => env('api.timeout'),
             'http_errors' => false,
             'verify'      => false, // nonaktifkan SSL verify jika pakai IP/port internal
         ]);
@@ -32,7 +32,7 @@ class CrpApiService
         try {
             $response = $this->client->get($this->adjustmentEndpoint, [
                 'headers' => [
-                    'Authorization' => 'Bearer ' . $this->config->token,
+                    'Authorization' => 'Bearer ' . env('api.token'),
                     'Accept'        => 'application/json',
                 ],
                 'query' => [
@@ -212,23 +212,5 @@ class CrpApiService
                 'rows' => [],
             ];
         }
-    }
-
-    private function resolveAdjustmentEndpoint(string $baseUrl): string
-    {
-        $baseUrl = trim($baseUrl);
-
-        if ($baseUrl === '') {
-            return 'AdjSamplingSparepart';
-        }
-
-        $baseUrl = preg_replace('/[?#].*$/', '', $baseUrl) ?? $baseUrl;
-        $baseUrl = rtrim($baseUrl, '/');
-
-        if (preg_match('#/AdjSamplingSparepart$#i', $baseUrl)) {
-            return $baseUrl;
-        }
-
-        return $baseUrl . '/AdjSamplingSparepart';
     }
 }
