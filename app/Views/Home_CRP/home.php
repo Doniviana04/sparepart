@@ -293,7 +293,6 @@
           <div class="card-icon text-primary"><i class="bi bi-clipboard-data-fill"></i></div>
           <div>
             <h6 class="fw-bold mb-0">CRP Dashboard</h6>
-            <span class="badge bg-primary role-badge">Jabatan 1-6</span>
           </div>
         </div>
         <p class="text-muted small mb-3">
@@ -314,7 +313,6 @@
           <div class="card-icon" style="color:#0f766e;"><i class="bi bi-eye-fill"></i></div>
           <div>
             <h6 class="fw-bold mb-0">Monitor User</h6>
-            <span class="badge role-badge text-white" style="background:#0f766e;">Semua Pengguna</span>
           </div>
         </div>
         <p class="text-muted small mb-3">

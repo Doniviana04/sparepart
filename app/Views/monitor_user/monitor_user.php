@@ -92,8 +92,8 @@
 <div class="container-fluid py-4">
 
 	<!-- Back navigation -->
-	<a href="<?= base_url('home') ?>" class="d-inline-flex align-items-center gap-1 text-secondary text-decoration-none mb-3 small fw-semibold">
-		<i class="bi bi-chevron-left"></i> Beranda
+	<a href="<?= base_url('home') ?>" class="btn btn-sm btn-outline-secondary rounded-pill px-3 mb-3 shadow-sm">
+		<i class="bi bi-house-door-fill me-1"></i> Kembali ke Beranda
 	</a>
 
 	<div class="header">
