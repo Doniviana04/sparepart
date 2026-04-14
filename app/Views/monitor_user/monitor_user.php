@@ -7,6 +7,8 @@
 
 	<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css">
+	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css">
 
 	<style>
 		body { font-family: system-ui, sans-serif; background: #f5f7fa; }
@@ -85,6 +87,14 @@
 		#paginationNav .page-item.ellipsis .page-link {
 			pointer-events: none;
 		}
+		.select2-container--bootstrap-5 .select2-selection {
+			min-height: calc(1.5em + .5rem + 2px);
+			font-size: .875rem;
+		}
+		#part_number_filter,
+		#part_number_filter + .select2-container {
+			width: 340px !important;
+		}
 	</style>
 </head>
 <body>
@@ -97,7 +107,7 @@
 	</a>
 
 	<div class="header">
-		<h5 class="mb-0 fw-semibold" id="pageTitle">MONITOR PEMAKAIAN QUOTA SPAREPART</h5>
+		<h5 class="mb-0 fw-semibold" id="pageTitle">MONITOR USER<br>PEMAKAIAN QUOTA SPAREPART</h5>
 	</div>
 
 	<div class="d-flex flex-wrap align-items-end gap-3 mb-4">
@@ -107,7 +117,7 @@
 		</div>
 		<div>
 			<label class="form-label fw-semibold small mb-1">Filter Notifikasi</label>
-			<select class="form-select form-select-sm" id="notification_filter">
+			<select class="form-select form-select-sm" id="notification_filter" style="min-width: 180px;">
 				<option value="all" selected>Semua item</option>
 				<option value="ok">OK</option>
 				<option value="alert">Harap lebih hemat</option>
@@ -183,6 +193,8 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 
 <script>
 function fixStickyHeaderOffsets() {
@@ -209,9 +221,29 @@ let canAccessCrp = false;
 let usageChart = null;
 let activeChartPartNumber = '';
 let activeChartMonth = '';
+let isSyncingPartNumberFilter = false;
 
 const graphModalElement = document.getElementById('graphModal');
 const graphModal = graphModalElement ? new bootstrap.Modal(graphModalElement) : null;
+
+function initPartNumberSelect2() {
+	if (typeof window.jQuery === 'undefined' || !window.jQuery.fn || !window.jQuery.fn.select2) {
+		return;
+	}
+
+	const select = document.getElementById('part_number_filter');
+	if (!select) {
+		return;
+	}
+
+	window.jQuery(select).select2({
+		theme: 'bootstrap-5',
+		width: '340px',
+		dropdownAutoWidth: true,
+		placeholder: 'Pilih part number',
+		allowClear: true,
+	});
+}
 
 function formatNumber(n) {
 	if (n == null) return '-';
@@ -219,7 +251,7 @@ function formatNumber(n) {
 }
 
 function updateYearHeaders(year) {
-	document.getElementById('pageTitle').textContent = `MONITOR PEMAKAIAN QUOTA SPAREPART ${year}`;
+	document.getElementById('pageTitle').innerHTML = `MONITOR USER<br>PEMAKAIAN QUOTA SPAREPART ${year}`;
 	document.getElementById('quotaYearHeader').textContent = `QUOTA QTY ${year}`;
 }
 
@@ -461,6 +493,12 @@ function updatePartNumberFilterOptions(options = [], selected = '') {
 
 	partNumberSelect.innerHTML = optionHtml.join('');
 	partNumberSelect.value = list.includes(selectedValue) ? selectedValue : '';
+
+	if (typeof window.jQuery !== 'undefined' && window.jQuery.fn && window.jQuery.fn.select2) {
+		isSyncingPartNumberFilter = true;
+		window.jQuery(partNumberSelect).trigger('change.select2');
+		isSyncingPartNumberFilter = false;
+	}
 }
 
 function updateNotificationFilterOptions(isAdmin = false) {
@@ -567,7 +605,26 @@ if (notificationSelect) {
 }
 if (partNumberSelect) {
 	partNumberSelect.addEventListener('change', () => {
+		if (isSyncingPartNumberFilter) {
+			return;
+		}
+
+		if (partNumberSelect.classList.contains('select2-hidden-accessible')) {
+			return;
+		}
+
 		selectedPartNumber = partNumberSelect.value || '';
+		loadData(monthPicker.value, 1);
+	});
+}
+
+if (typeof window.jQuery !== 'undefined') {
+	window.jQuery(document).on('select2:select select2:clear', '#part_number_filter', function () {
+		if (isSyncingPartNumberFilter) {
+			return;
+		}
+
+		selectedPartNumber = this.value || '';
 		loadData(monthPicker.value, 1);
 	});
 }
@@ -623,6 +680,7 @@ window.addEventListener('storage', event => {
 	refreshFromCurrentSelection();
 });
 window.addEventListener('load', () => {
+	initPartNumberSelect2();
 	updateNotificationFilterOptions(canAccessCrp);
 	loadData(monthPicker.value, 1);
 	setupAutoRefresh();

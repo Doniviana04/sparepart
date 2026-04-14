@@ -7,6 +7,8 @@
 
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css">
 
   <style>
     body { font-family: system-ui, sans-serif; background: #f5f7fa; }
@@ -80,6 +82,13 @@
       min-width: 0;
       font-size: .8rem;
     }
+    .select2-container--bootstrap-5 .select2-selection {
+      min-height: calc(1.5em + .5rem + 2px);
+      font-size: .8rem;
+    }
+    .select2-container--bootstrap-5 .select2-dropdown .select2-results__option {
+      font-size: .8rem;
+    }
 
     .pagination-wrap {
       background: #fff;
@@ -128,7 +137,7 @@
   </a>
 
   <div class="header">
-    <h5 class="mb-0 fw-semibold" id="pageTitle">LIST ITEM SPAREPART UNTUK CRP</h5>
+    <h5 class="mb-0 fw-semibold" id="pageTitle">DASHBOARD CRP<br>LIST ITEM SPAREPART UNTUK CRP</h5>
   </div>
 
   <div class="card card-custom mb-3">
@@ -271,6 +280,8 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 
 <script>
 /* ── Hitung tinggi tiap header-row, set CSS variable ── */
@@ -301,6 +312,8 @@ let usageQuotaChart = null;
 let summaryAmountChart = null;
 let activeChartPartNumber = '';
 let activeChartMonth = '';
+let isSyncingColumnFilters = false;
+let lastSummaryMonth = '';
 const columnFilterKeys = ['part_number', 'description', 'usage_qty', 'ach_persen', 'variance_amount'];
 const optionalDataLabelsPlugin = (typeof ChartDataLabels !== 'undefined') ? [ChartDataLabels] : [];
 
@@ -350,7 +363,31 @@ function getActiveColumnFilters() {
   return filters;
 }
 
+function initColumnFiltersSelect2() {
+  if (typeof window.jQuery === 'undefined' || !window.jQuery.fn || !window.jQuery.fn.select2) {
+    return;
+  }
+
+  const searchableKeys = ['part_number', 'description', 'usage_qty', 'ach_persen'];
+
+  searchableKeys.forEach(key => {
+    const element = document.querySelector(`.column-filter[data-filter-key="${key}"]`);
+    if (!element) {
+      return;
+    }
+
+    window.jQuery(element).select2({
+      theme: 'bootstrap-5',
+      width: '100%',
+      allowClear: true,
+      placeholder: 'Ketik atau pilih',
+    });
+  });
+}
+
 function syncColumnFilters(filterOptions = {}) {
+  isSyncingColumnFilters = true;
+
   columnFilterKeys.forEach(key => {
     const element = document.querySelector(`.column-filter[data-filter-key="${key}"]`);
     if (!element || element.disabled) {
@@ -363,6 +400,11 @@ function syncColumnFilters(filterOptions = {}) {
       if (!allowed.has(currentVariance)) {
         element.value = '';
       }
+
+      if (typeof window.jQuery !== 'undefined' && window.jQuery.fn && window.jQuery.fn.select2) {
+        window.jQuery(element).trigger('change.select2');
+      }
+
       return;
     }
 
@@ -381,23 +423,37 @@ function syncColumnFilters(filterOptions = {}) {
     if (currentValue && options.some(option => String(option.value ?? '') === currentValue)) {
       element.value = currentValue;
     }
+
+    if (typeof window.jQuery !== 'undefined' && window.jQuery.fn && window.jQuery.fn.select2) {
+      window.jQuery(element).trigger('change.select2');
+    }
   });
+
+  isSyncingColumnFilters = false;
 }
 
 function resetAllColumnFilters() {
+  isSyncingColumnFilters = true;
+
   columnFilterKeys.forEach(key => {
     const element = document.querySelector(`.column-filter[data-filter-key="${key}"]`);
     if (element) {
       element.value = '';
+
+      if (typeof window.jQuery !== 'undefined' && window.jQuery.fn && window.jQuery.fn.select2) {
+        window.jQuery(element).trigger('change.select2');
+      }
     }
   });
+
+  isSyncingColumnFilters = false;
 
   loadData(monthPicker.value, 1);
 }
 
 function updateYearHeaders(year) {
   const prev = year - 1;
-  document.getElementById('pageTitle').textContent  = `LIST ITEM SPAREPART UNTUK CRP ${year}`;
+  document.getElementById('pageTitle').innerHTML  = `DASHBOARD CRP<br>LIST ITEM SPAREPART UNTUK CRP ${year}`;
   document.getElementById('totalYear').textContent  = `TOTAL ${prev}`;
   document.getElementById('usageYear').innerHTML    = `USAGE<br>QTY ${prev}`;
   document.getElementById('amountYear').textContent = `AMOUNT ${prev}`;
@@ -1054,7 +1110,10 @@ function loadData(month, page = 1) {
 
       syncPartSelector(rows);
       loadUsageChart(month);
-  loadSummaryAmountChart(month);
+      if (lastSummaryMonth !== month) {
+        loadSummaryAmountChart(month);
+        lastSummaryMonth = month;
+      }
 
       if (rows.length === 0) {
         tbody.innerHTML = '<tr><td colspan="11" class="text-center text-muted py-3">No data available</td></tr>';
@@ -1105,12 +1164,27 @@ showLimit.addEventListener('change', () => {
 });
 document.addEventListener('change', event => {
   const filter = event.target.closest('.column-filter[data-filter-key]');
-  if (!filter || filter.disabled) {
+  if (!filter || filter.disabled || isSyncingColumnFilters) {
+    return;
+  }
+
+  // Filter select2 sudah ditangani oleh event select2:select/select2:clear.
+  if (filter.classList.contains('select2-hidden-accessible')) {
     return;
   }
 
   loadData(monthPicker.value, 1);
 });
+
+if (typeof window.jQuery !== 'undefined') {
+  window.jQuery(document).on('select2:select select2:clear', '.column-filter[data-filter-key]', function () {
+    if (isSyncingColumnFilters) {
+      return;
+    }
+
+    loadData(monthPicker.value, 1);
+  });
+}
 document.getElementById('filterResetBtn').addEventListener('click', resetAllColumnFilters);
 document.getElementById('paginationNav').addEventListener('click', event => {
   const button = event.target.closest('button[data-page]');
@@ -1177,6 +1251,7 @@ window.addEventListener('storage', event => {
 });
 
 window.addEventListener('load', () => {
+  initColumnFiltersSelect2();
   loadData(monthPicker.value, 1);
   /* Hitung offset setelah browser render header */
   requestAnimationFrame(fixStickyHeaderOffsets);

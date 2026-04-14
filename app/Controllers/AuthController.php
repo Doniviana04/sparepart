@@ -47,14 +47,14 @@ class AuthController extends BaseController
         if (!($authResult['success'] ?? false)) {
             return redirect()->back()
                 ->withInput()
-                ->with('error', (string) ($authResult['message'] ?? 'Username atau password tidak valid.'));
+                ->with('error', 'Login gagal. Periksa kembali username atau password Anda.');
         }
 
         $kodeJabatanRaw = $authResult['kode_jabatan'] ?? null;
         if (!is_numeric($kodeJabatanRaw)) {
             return redirect()->back()
                 ->withInput()
-                ->with('error', 'Kode jabatan tidak ditemukan. Hubungi administrator.');
+                ->with('error', 'Login gagal. Akun Anda belum memiliki akses ke aplikasi ini.');
         }
 
         $kodeJabatan = (int) $kodeJabatanRaw;
@@ -62,7 +62,7 @@ class AuthController extends BaseController
         if (!in_array($kodeJabatan, self::KODE_JABATAN_ALLOWED, true)) {
             return redirect()->back()
                 ->withInput()
-                ->with('error', 'Kode jabatan akun tidak diizinkan untuk mengakses aplikasi ini.');
+                ->with('error', 'Login gagal. Akun Anda belum memiliki akses ke aplikasi ini.');
         }
 
         $apiUsername = trim((string) ($authResult['username'] ?? $username));
