@@ -8,8 +8,8 @@ use Config\Services;
 class M_Login extends Model
 {
     private const LOGIN_API_URL = 'https://portal3.incoe.astra.co.id/production_control_v2/public/api/login';
-    private const LOGIN_API_TIMEOUT_SECONDS = 15;
-    private const LOGIN_API_RETRY = 1;
+    private const LOGIN_API_TIMEOUT_SECONDS = 5;
+    private const LOGIN_API_RETRY = 0;
     protected $db1;
     protected $dbProdControl;
     protected array $fallbackUserConnections = [];
@@ -47,30 +47,6 @@ class M_Login extends Model
 
     public function cek_login_api($username, $password)
     {
-        // $query = $this->db1->query('WITH data_karyawan AS (
-        //                                 SELECT master_data_karyawan.*, users.username, users.password, divisi.divisi, departement.departement, section.section, sub_section.sub_section
-        //                                 FROM master_data_karyawan
-        //                                 LEFT JOIN users ON users.npk = master_data_karyawan.npk
-        //                                 LEFT JOIN divisi ON master_data_karyawan.id_divisi = divisi.id_divisi
-        //                                 LEFT JOIN departement ON master_data_karyawan.id_departement = departement.id_departement
-        //                                 LEFT JOIN section ON master_data_karyawan.id_section = section.id_section
-        //                                 LEFT JOIN sub_section ON master_data_karyawan.id_sub_section = sub_section.id_sub_section
-        //                                 WHERE master_data_karyawan.status_karyawan = \'cbi\' or master_data_karyawan.status_karyawan = \'cbi_dev\'
-        //                                 UNION
-        //                                 SELECT master_data_karyawan_subcount.*, users.username, users.password, divisi.divisi, departement.departement, section.section, sub_section.sub_section
-        //                                 FROM master_data_karyawan_subcount
-        //                                 LEFT JOIN users ON users.npk = master_data_karyawan_subcount.npk
-        //                                 LEFT JOIN divisi ON master_data_karyawan_subcount.id_divisi = divisi.id_divisi
-        //                                 LEFT JOIN departement ON master_data_karyawan_subcount.id_departement = departement.id_departement
-        //                                 LEFT JOIN section ON master_data_karyawan_subcount.id_section = section.id_section
-        //                                 LEFT JOIN sub_section ON master_data_karyawan_subcount.id_sub_section = sub_section.id_sub_section
-        //                             )
-                                        
-        //                             SELECT * FROM data_karyawan WHERE username = \''.$username.'\' AND password = \''.$password.'\'
-
-        // ');
-
-        // return $query->getRowArray();
         $sql = 'WITH data_karyawan AS (
             SELECT master_data_karyawan.*, users.username, users.password, divisi.divisi, departement.departement, section.section, sub_section.sub_section
             FROM master_data_karyawan
@@ -92,30 +68,6 @@ class M_Login extends Model
         SELECT * FROM data_karyawan WHERE username = ? AND password = ?';
         $query = $this->db1->query($sql, ['cbi', 'cbi_dev', $username, $password]);
         return $query->getRowArray();
-    }
-
-    public function cek_management_rules($divisi)
-    {
-        // $query = $this->db1->query('SELECT master_data_karyawan.*, divisi.divisi, departement.departement, section.section, sub_section.sub_section
-        //                             FROM master_data_karyawan
-        //                             LEFT JOIN users ON users.npk = master_data_karyawan.npk
-        //                             LEFT JOIN divisi ON master_data_karyawan.id_divisi = divisi.id_divisi
-        //                             LEFT JOIN departement ON master_data_karyawan.id_departement = departement.id_departement
-        //                             LEFT JOIN section ON master_data_karyawan.id_section = section.id_section
-        //                             LEFT JOIN sub_section ON master_data_karyawan.id_sub_section = sub_section.id_sub_section
-        //                             WHERE divisi.divisi = \''.$divisi.'\' and (kode_jabatan = 4 or kode_jabatan = 3 or kode_jabatan = 2)');
-
-        // return $query->getResultArray();
-        $sql = 'SELECT master_data_karyawan.*, divisi.divisi, departement.departement, section.section, sub_section.sub_section
-            FROM master_data_karyawan
-            LEFT JOIN users ON users.npk = master_data_karyawan.npk
-            LEFT JOIN divisi ON master_data_karyawan.id_divisi = divisi.id_divisi
-            LEFT JOIN departement ON master_data_karyawan.id_departement = departement.id_departement
-            LEFT JOIN section ON master_data_karyawan.id_section = section.id_section
-            LEFT JOIN sub_section ON master_data_karyawan.id_sub_section = sub_section.id_sub_section
-            WHERE divisi.divisi = ? and (kode_jabatan = 4 or kode_jabatan = 3 or kode_jabatan = 2) and status_karyawan = ? and status = 1';
-        $query = $this->db1->query($sql, [$divisi, 'cbi']);
-        return $query->getResultArray();
     }
 
     public function cek_login_npk_api($npk)
@@ -176,42 +128,44 @@ class M_Login extends Model
 
     public function authenticatePortalUser(string $username, string $password): array
     {
+        // OPTIMASI: Cek lokal dulu (< 100ms) sebelum API (~5s timeout)
+        $localUser = $this->findLocalUser($username, $password);
+        $localLevel = $this->extractLevelFromLocalUser($localUser);
+
+        if ($localLevel !== null && is_array($localUser)) {
+            log_message('info', 'Login lokal berhasil untuk username: {username}', ['username' => $username]);
+
+            return [
+                'success'         => true,
+                'message'         => 'Login berhasil (lokal).',
+                'level'           => $localLevel,
+                'username'        => (string) ($localUser['username'] ?? $username),
+                'name'            => (string) ($localUser['nama'] ?? $username),
+                'npk'             => $localUser['npk'] ?? null,
+                'jabatan'         => (string) ($localUser['jabatan'] ?? ''),
+                'kode_jabatan'    => $localUser['kode_jabatan'] ?? null,
+                'departement'     => $localUser['departement'] ?? ($localUser['departemen'] ?? null),
+                'id_departement'  => $localUser['id_departement'] ?? null,
+                'is_login'        => true,
+            ];
+        }
+
+        // Fallback ke API hanya jika lokal tidak ketemu
         $apiResult = $this->requestPortalLoginApi($username, $password);
         $isTimeout = (bool) ($apiResult['timeout'] ?? false);
         $payload = $apiResult['payload'] ?? [];
 
         if ($isTimeout) {
-            $localUser = $this->findLocalUser($username, $password);
-            $localLevel = $this->extractLevelFromLocalUser($localUser);
-
-            if ($localLevel !== null) {
-                log_message('warning', 'Login API timeout, menggunakan fallback local untuk username: {username}', ['username' => $username]);
-
-                return [
-                    'success'         => true,
-                    'message'         => 'Login berhasil (fallback lokal).',
-                    'level'           => $localLevel,
-                    'username'        => (string) ($localUser['username'] ?? $username),
-                    'name'            => (string) ($localUser['nama'] ?? $username),
-                    'npk'             => $localUser['npk'] ?? null,
-                    'jabatan'         => (string) ($localUser['jabatan'] ?? ''),
-                    'kode_jabatan'    => $localUser['kode_jabatan'] ?? null,
-                    'departement'     => $localUser['departement'] ?? ($localUser['departemen'] ?? null),
-                    'id_departement'  => $localUser['id_departement'] ?? null,
-                    'is_login'        => true,
-                ];
-            }
-
             return [
                 'success' => false,
-                'message' => 'Server login API sedang timeout dan data user lokal tidak ditemukan.',
+                'message' => 'Login gagal: database lokal tidak aktif dan API server sedang tidak responsif.',
             ];
         }
 
         if (($apiResult['success'] ?? false) !== true) {
             return [
                 'success' => false,
-                'message' => (string) ($apiResult['message'] ?? 'Gagal terhubung ke server login API.'),
+                'message' => (string) ($apiResult['message'] ?? 'Username atau password tidak valid.'),
             ];
         }
 
@@ -235,18 +189,8 @@ class M_Login extends Model
             $userData = $this->extractUserData($payload);
             $level = $this->extractLevel($userData, $payload);
 
-            $localUser = null;
             if ($level === null) {
-                // Fallback: beberapa respons API sukses tidak mengirim field level.
-                $localUser = $this->findLocalUser($username, $password);
-                $level = $this->extractLevelFromLocalUser($localUser);
-            }
-
-            if ($level === null) {
-                log_message('error', 'Level user tidak ditemukan. Username: {username}. Payload: {payload}', [
-                    'username' => $username,
-                    'payload'  => json_encode($payload),
-                ]);
+                log_message('error', 'Level user tidak ditemukan dari API. Username: {username}', ['username' => $username]);
 
                 return [
                     'success' => false,
@@ -254,19 +198,17 @@ class M_Login extends Model
                 ];
             }
 
-            $localUser ??= $this->findLocalUser($username, $password);
-
             return [
                 'success'         => true,
-                'message'         => 'Login berhasil.',
+                'message'         => 'Login berhasil (API).',
                 'level'           => $level,
                 'username'        => $this->extractUserName($userData, $username),
-                'name'            => $this->extractDisplayName($userData) ?: (string) ($localUser['nama'] ?? ''),
-                'npk'             => $this->extractScalarValue($userData, $payload, ['npk', 'NPK']) ?? ($localUser['npk'] ?? null),
-                'jabatan'         => (string) ($this->extractScalarValue($userData, $payload, ['jabatan', 'nama_jabatan', 'job_title', 'position']) ?? ($localUser['jabatan'] ?? '')),
-                'kode_jabatan'    => $this->extractScalarValue($userData, $payload, ['kode_jabatan', 'kodeJabatan']) ?? ($localUser['kode_jabatan'] ?? null),
-                'departement'     => $this->extractScalarValue($userData, $payload, ['departement', 'department', 'departemen']) ?? ($localUser['departement'] ?? ($localUser['departemen'] ?? null)),
-                'id_departement'  => $this->extractScalarValue($userData, $payload, ['id_departement', 'id_department']) ?? ($localUser['id_departement'] ?? null),
+                'name'            => $this->extractDisplayName($userData) ?: $username,
+                'npk'             => $this->extractScalarValue($userData, $payload, ['npk', 'NPK']) ?? null,
+                'jabatan'         => (string) ($this->extractScalarValue($userData, $payload, ['jabatan', 'nama_jabatan', 'job_title', 'position']) ?? ''),
+                'kode_jabatan'    => $this->extractScalarValue($userData, $payload, ['kode_jabatan', 'kodeJabatan']) ?? null,
+                'departement'     => $this->extractScalarValue($userData, $payload, ['departement', 'department', 'departemen']) ?? null,
+                'id_departement'  => $this->extractScalarValue($userData, $payload, ['id_departement', 'id_department']) ?? null,
                 'is_login'        => $this->extractScalarValue($userData, $payload, ['is_login', 'isLogin']) ?? true,
             ];
         } catch (\Throwable $e) {
@@ -281,69 +223,57 @@ class M_Login extends Model
 
     private function requestPortalLoginApi(string $username, string $password): array
     {
-        $lastError = null;
-
-        for ($attempt = 0; $attempt <= self::LOGIN_API_RETRY; $attempt++) {
+        try {
             $client = Services::curlrequest([
                 'timeout'         => self::LOGIN_API_TIMEOUT_SECONDS,
-                'connect_timeout' => 5,
+                'connect_timeout' => 3,
                 'http_errors'     => false,
                 'verify'          => false,
             ]);
 
-            try {
-                $response = $client->post(self::LOGIN_API_URL, [
-                    'headers' => [
-                        'Accept' => 'application/json',
-                    ],
-                    'form_params' => [
-                        'username' => $username,
-                        'password' => $password,
-                    ],
+            $response = $client->post(self::LOGIN_API_URL, [
+                'headers' => [
+                    'Accept' => 'application/json',
+                ],
+                'form_params' => [
+                    'username' => $username,
+                    'password' => $password,
+                ],
+            ]);
+
+            $payload = json_decode((string) $response->getBody(), true);
+            if (!is_array($payload)) {
+                $payload = [];
+            }
+
+            return [
+                'success'    => true,
+                'timeout'    => false,
+                'statusCode' => $response->getStatusCode(),
+                'payload'    => $payload,
+            ];
+        } catch (\Throwable $e) {
+            if ($this->isTimeoutException($e)) {
+                log_message('warning', 'Login API timeout setelah {timeout}s. Username: {username}', [
+                    'timeout'  => self::LOGIN_API_TIMEOUT_SECONDS,
+                    'username' => $username,
                 ]);
 
-                $payload = json_decode((string) $response->getBody(), true);
-                if (!is_array($payload)) {
-                    $payload = [];
-                }
-
                 return [
-                    'success'    => true,
-                    'timeout'    => false,
-                    'statusCode' => $response->getStatusCode(),
-                    'payload'    => $payload,
+                    'success' => false,
+                    'timeout' => true,
+                    'message' => 'Login API timeout.',
                 ];
-            } catch (\Throwable $e) {
-                $lastError = $e;
-
-                if ($this->isTimeoutException($e)) {
-                    if ($attempt < self::LOGIN_API_RETRY) {
-                        usleep(300000);
-                        continue;
-                    }
-
-                    log_message('error', 'Login API model error: {message}', ['message' => $e->getMessage()]);
-
-                    return [
-                        'success' => false,
-                        'timeout' => true,
-                        'message' => 'Login API timeout.',
-                    ];
-                }
-
-                break;
             }
-        }
 
-        if ($lastError !== null) {
-            log_message('error', 'Login API model error: {message}', ['message' => $lastError->getMessage()]);
-        }
+            log_message('error', 'Login API connection error: {message}', ['message' => $e->getMessage()]);
 
-        return [
-            'success' => false,
-            'timeout' => false,
-            'message' => 'Gagal terhubung ke server login API.',
-        ];
+            return [
+                'success' => false,
+                'timeout' => false,
+                'message' => 'Gagal terhubung ke server login API.',
+            ];
+        }
     }
 
     private function isTimeoutException(\Throwable $e): bool
@@ -530,42 +460,35 @@ class M_Login extends Model
 
     private function findLocalUser(string $username, string $password): ?array
     {
+        // OPTIMASI: Hanya cek DB yang paling mungkin punya data user valid, early return kalau ketemu
         foreach ($this->fallbackUserConnections as $group => $conn) {
             if ($conn === null) {
                 continue;
             }
 
             try {
+                // Cek dengan username + password langsung
                 $row = $conn->table('users')
                     ->select('*')
                     ->where('username', $username)
                     ->where('password', $password)
+                    ->limit(1)
                     ->get()
                     ->getRowArray();
 
-                if (is_array($row)) {
-                    return $row;
-                }
-
-                // Fallback: kalau password lokal berbeda format, baca metadata via username.
-                $row = $conn->table('users')
-                    ->select('*')
-                    ->where('username', $username)
-                    ->get()
-                    ->getRowArray();
-
-                if (is_array($row)) {
+                if (is_array($row) && !empty($row)) {
+                    log_message('debug', 'findLocalUser berhasil di DB group: {group}', ['group' => $group]);
                     return $row;
                 }
             } catch (\Throwable $e) {
-                log_message('debug', 'findLocalUser {group} users failed: {message}', [
+                log_message('debug', 'findLocalUser {group} failed: {message}', [
                     'group'   => $group,
                     'message' => $e->getMessage(),
                 ]);
+                continue;
             }
         }
 
-        log_message('debug', 'findLocalUser no row for username: {username}', ['username' => $username]);
         return null;
     }
 
@@ -574,23 +497,38 @@ class M_Login extends Model
         $this->fallbackUserConnections = [];
 
         // Prioritas koneksi yang paling mungkin berisi tabel users otorisasi login.
-        $this->registerFallbackConnection('henkaten', $this->db1 ?? null);
-        $this->registerFallbackConnection('prod_control', $this->dbProdControl ?? null);
 
-        foreach (['prod_control_sqlsrv', 'prod_control_infor', 'default'] as $group) {
-            if (isset($this->fallbackUserConnections[$group])) {
-                continue;
+
+            // Prioritas koneksi Login: default (prod_control_v2_dev) → henkaten → prod_control
+            // Tidak check sparepart_price, itu hanya untuk CRP admin NPK whitelist!
+        
+            if ($this->db !== null) {
+                $this->registerFallbackConnection('default', $this->db);
             }
 
-            try {
-                $this->registerFallbackConnection($group, \Config\Database::connect($group));
-            } catch (\Throwable $e) {
-                log_message('debug', 'DB group {group} tidak tersedia untuk fallback login: {message}', [
-                    'group'   => $group,
-                    'message' => $e->getMessage(),
-                ]);
+            if ($this->db1 !== null) {
+                $this->registerFallbackConnection('henkaten', $this->db1);
             }
-        }
+
+            if ($this->dbProdControl !== null) {
+                $this->registerFallbackConnection('prod_control', $this->dbProdControl);
+            }
+
+            // Fallback tambahan jika ketiga di atas gagal
+            foreach (['prod_control_sqlsrv', 'prod_control_infor'] as $group) {
+                if (isset($this->fallbackUserConnections[$group])) {
+                    continue;
+                }
+
+                try {
+                    $this->registerFallbackConnection($group, \Config\Database::connect($group));
+                } catch (\Throwable $e) {
+                    log_message('debug', 'DB group {group} tidak tersedia untuk fallback login: {message}', [
+                        'group'   => $group,
+                        'message' => $e->getMessage(),
+                    ]);
+                }
+            }
     }
 
     private function registerFallbackConnection(string $group, $connection): void
