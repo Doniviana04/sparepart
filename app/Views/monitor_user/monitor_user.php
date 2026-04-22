@@ -209,7 +209,6 @@ function fixStickyHeaderOffsets() {
 }
 
 const API_URL = '<?= base_url('monitor-user/data') ?>';
-const CHART_API_URL = '<?= base_url('monitor-user/chart-usage') ?>';
 const CONTROL_UPDATE_EVENT_KEY = 'crp-control-updated';
 const AUTO_REFRESH_INTERVAL_MS = 10000;
 let autoRefreshTimer = null;
@@ -222,6 +221,8 @@ let usageChart = null;
 let activeChartPartNumber = '';
 let activeChartMonth = '';
 let isSyncingPartNumberFilter = false;
+let dashboardRows = [];
+let dashboardPagination = {};
 
 const graphModalElement = document.getElementById('graphModal');
 const graphModal = graphModalElement ? new bootstrap.Modal(graphModalElement) : null;
@@ -260,6 +261,8 @@ function renderGraphButton(row) {
 		<button type="button" class="btn btn-sm btn-outline-primary btn-chart-toggle"
 			data-part-number="${encodeURIComponent(String(row.PART_NUMBER ?? ''))}"
 			data-description="${encodeURIComponent(String(row.DESCRIPTION ?? '-'))}"
+			data-quota-qty="${encodeURIComponent(String(row.QUOTA_QTY ?? 0))}"
+			data-uptodate-usage="${encodeURIComponent(String(row.UPTODATE_USAGE ?? 0))}"
 			title="Lihat grafik penggunaan">
 			<i class="bi bi-graph-up"></i> Grafik
 		</button>`;
@@ -336,7 +339,31 @@ function updateUsageChart(data) {
 	chart.update();
 }
 
-function loadUsageChart(month, partNumber, description = '-') {
+function buildLocalUsageChartPayload(month, quotaQty, upToDateUsage) {
+	const labels = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+	const monthNumber = Math.max(1, Math.min(12, Number(String(month).split('-')[1] ?? 1)));
+	const quota = Number.isFinite(Number(quotaQty)) ? Number(quotaQty) : 0;
+	const usage = Number.isFinite(Number(upToDateUsage)) ? Number(upToDateUsage) : 0;
+
+	const actualUsage = [];
+	for (let i = 1; i <= 12; i += 1) {
+		if (i <= monthNumber) {
+			const cumulativeEstimate = (usage / monthNumber) * i;
+			actualUsage.push(Math.round(cumulativeEstimate * 100) / 100);
+		} else {
+			actualUsage.push(null);
+		}
+	}
+
+	return {
+		labels,
+		actual_usage: actualUsage,
+		max_quota: Array.from({ length: 12 }, () => Math.round(quota * 100) / 100),
+		max_quota_val: Math.round(quota * 100) / 100,
+	};
+}
+
+function loadUsageChart(month, partNumber, description = '-', quotaQty = 0, upToDateUsage = 0) {
 	if (!partNumber || !month) {
 		return;
 	}
@@ -351,47 +378,22 @@ function loadUsageChart(month, partNumber, description = '-') {
 	}
 	if (subtitle) {
 		subtitle.textContent = description && description !== '-'
-			? `${description} | Periode ${month}`
-			: `Periode ${month}`;
+			? `${description} | Data dari tabel | Periode ${month}`
+			: `Data dari tabel | Periode ${month}`;
 	}
 
 	if (graphModal) {
 		graphModal.show();
 	}
 
-	const chart = ensureUsageChart();
-	if (chart) {
-		chart.data.labels = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
-		chart.data.datasets[0].data = [];
-		chart.data.datasets[1].data = [];
-		chart.update();
+	const payload = buildLocalUsageChartPayload(month, quotaQty, upToDateUsage);
+	updateUsageChart(payload);
+
+	if (subtitle) {
+		subtitle.textContent = description && description !== '-'
+			? `${description} | Max kuota ${formatNumber(payload.max_quota_val ?? 0)} | Up to date ${formatNumber(upToDateUsage)} | Periode ${month}`
+			: `Max kuota ${formatNumber(payload.max_quota_val ?? 0)} | Up to date ${formatNumber(upToDateUsage)} | Periode ${month}`;
 	}
-
-	fetch(`${CHART_API_URL}?month=${encodeURIComponent(month)}&part_number=${encodeURIComponent(partNumber)}`)
-		.then(r => {
-			if (!r.ok) {
-				throw new Error(`HTTP ${r.status}`);
-			}
-			return r.json();
-		})
-		.then(json => {
-			if (activeChartPartNumber !== partNumber || activeChartMonth !== month) {
-				return;
-			}
-
-			updateUsageChart(json);
-			if (subtitle) {
-				subtitle.textContent = description && description !== '-'
-					? `${description} | Max kuota ${formatNumber(json.max_quota_val ?? 0)} | Periode ${month}`
-					: `Max kuota ${formatNumber(json.max_quota_val ?? 0)} | Periode ${month}`;
-			}
-		})
-		.catch(err => {
-			if (subtitle) {
-				subtitle.textContent = `Gagal memuat grafik: ${err.message}`;
-			}
-			console.error(err);
-		});
 }
 
 function updatePagination(meta = {}) {
@@ -477,8 +479,13 @@ function updatePartNumberFilterOptions(options = [], selected = '') {
 		return;
 	}
 
-	const list = Array.isArray(options) ? options : [];
+	const list = Array.isArray(options) ? [...options] : [];
 	const selectedValue = String(selected || '');
+	if (selectedValue !== '' && !list.includes(selectedValue)) {
+		list.push(selectedValue);
+	}
+
+	list.sort((a, b) => String(a).localeCompare(String(b), 'id'));
 	const optionHtml = ['<option value="">Semua part number</option>'];
 
 	list.forEach(partNumber => {
@@ -492,12 +499,99 @@ function updatePartNumberFilterOptions(options = [], selected = '') {
 	});
 
 	partNumberSelect.innerHTML = optionHtml.join('');
-	partNumberSelect.value = list.includes(selectedValue) ? selectedValue : '';
+	partNumberSelect.value = selectedValue;
 
 	if (typeof window.jQuery !== 'undefined' && window.jQuery.fn && window.jQuery.fn.select2) {
 		isSyncingPartNumberFilter = true;
 		window.jQuery(partNumberSelect).trigger('change.select2');
 		isSyncingPartNumberFilter = false;
+	}
+}
+
+function buildPartNumberFilterOptionsFromRows(rows = []) {
+	const unique = new Set();
+
+	rows.forEach(row => {
+		const partNumber = String(row.PART_NUMBER ?? '').trim();
+		if (partNumber !== '') {
+			unique.add(partNumber);
+		}
+	});
+
+	return Array.from(unique).sort((a, b) => a.localeCompare(b, 'id'));
+}
+
+function renderMonitorRows(rows = []) {
+	const tbody = document.querySelector('#tblMonitor tbody');
+	if (!tbody) {
+		return;
+	}
+
+	if (rows.length === 0) {
+		tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">Tidak ada data monitor untuk filter yang dipilih</td></tr>';
+		return;
+	}
+
+	tbody.innerHTML = rows.map(d => `
+		<tr>
+			<td class="text-center">${d.NO}</td>
+			<td>${d.PART_NUMBER ?? '-'}</td>
+			<td>${d.DESCRIPTION ?? '-'}</td>
+			<td class="text-end">${formatNumber(d.QUOTA_QTY)}</td>
+			<td class="text-end">${formatNumber(d.UPTODATE_USAGE)}</td>
+			<td class="text-end">${formatNumber(d.SISA_AKTUAL)}</td>
+			<td class="text-end">${formatNumber(d.SISA_IDEAL)}</td>
+			<td class="text-center">${renderGraphButton(d)}</td>
+			<td class="text-center">
+				<span class="badge ${d.KETERANGAN === 'Harap lebih hemat' ? 'bg-warning text-dark' : 'bg-success'} rounded-pill px-3 py-2">
+					${d.KETERANGAN ?? '-'}
+				</span>
+			</td>
+		</tr>`).join('');
+}
+
+function matchesNotificationFilter(row) {
+	if (notificationFilter === 'all') {
+		return true;
+	}
+
+	const status = String(row.KETERANGAN ?? '').trim();
+	if (notificationFilter === 'ok') {
+		return status === 'OK';
+	}
+
+	if (notificationFilter === 'alert') {
+		return status === 'Harap lebih hemat';
+	}
+
+	if (notificationFilter === 'controlled') {
+		return true;
+	}
+
+	return true;
+}
+
+function applyLocalFiltersToMonitor() {
+	const filteredRows = dashboardRows
+		.filter(row => {
+			const partNumber = String(row.PART_NUMBER ?? '').trim();
+			if (selectedPartNumber && partNumber !== selectedPartNumber) {
+				return false;
+			}
+
+			return matchesNotificationFilter(row);
+		})
+		.map((row, index) => ({ ...row, NO: index + 1 }));
+
+	renderMonitorRows(filteredRows);
+
+	const info = document.getElementById('paginationInfo');
+	if (info) {
+		if (filteredRows.length === dashboardRows.length) {
+			updatePagination(dashboardPagination);
+		} else {
+			info.textContent = `Menampilkan ${filteredRows.length} dari ${dashboardRows.length} data pada halaman ini`;
+		}
 	}
 }
 
@@ -526,7 +620,7 @@ function loadData(month, page = 1, options = {}) {
 		tbody.innerHTML = '<tr><td colspan="9" class="text-center py-3"><span class="spinner-border spinner-border-sm me-2"></span>Loading data...</td></tr>';
 	}
 
-	fetch(`${API_URL}?month=${encodeURIComponent(month)}&page=${page}&limit=${encodeURIComponent(pageSize)}&notification=${encodeURIComponent(notificationFilter)}&part_number=${encodeURIComponent(selectedPartNumber)}`)
+	fetch(`${API_URL}?month=${encodeURIComponent(month)}&page=${page}&limit=${encodeURIComponent(pageSize)}`)
 		.then(r => {
 			if (!r.ok) throw new Error(`HTTP ${r.status}`);
 			return r.json();
@@ -535,37 +629,18 @@ function loadData(month, page = 1, options = {}) {
 			const rows = json.data ?? [];
 			const meta = json.pagination ?? {};
 			const year = parseInt(json.year ?? month.split('-')[0], 10);
-			canAccessCrp = Boolean(json.can_access_crp ?? false);
-			selectedPartNumber = String(json.selected_part_number ?? selectedPartNumber ?? '');
-			updatePartNumberFilterOptions(json.part_number_options ?? [], selectedPartNumber);
+			dashboardRows = rows;
+			dashboardPagination = meta;
+			canAccessCrp = Boolean(json.can_access_crp ?? canAccessCrp);
+			updatePartNumberFilterOptions(buildPartNumberFilterOptionsFromRows(rows), selectedPartNumber);
 			updateNotificationFilterOptions(canAccessCrp);
 			updateYearHeaders(year);
 			updatePagination(meta);
-			const emptyMessage = 'Tidak ada data monitor untuk filter yang dipilih';
-
-			if (rows.length === 0) {
-				tbody.innerHTML = `<tr><td colspan="9" class="text-center text-muted py-3">${emptyMessage}</td></tr>`;
-				return;
-			}
-
-			tbody.innerHTML = rows.map(d => `
-				<tr>
-					<td class="text-center">${d.NO}</td>
-					<td>${d.PART_NUMBER ?? '-'}</td>
-					<td>${d.DESCRIPTION ?? '-'}</td>
-					<td class="text-end">${formatNumber(d.QUOTA_QTY)}</td>
-					<td class="text-end">${formatNumber(d.UPTODATE_USAGE)}</td>
-					<td class="text-end">${formatNumber(d.SISA_AKTUAL)}</td>
-					<td class="text-end">${formatNumber(d.SISA_IDEAL)}</td>
-					<td class="text-center">${renderGraphButton(d)}</td>
-					<td class="text-center">
-						<span class="badge ${d.KETERANGAN === 'Harap lebih hemat' ? 'bg-warning text-dark' : 'bg-success'} rounded-pill px-3 py-2">
-							${d.KETERANGAN ?? '-'}
-						</span>
-					</td>
-				</tr>`).join('');
+			applyLocalFiltersToMonitor();
 		})
 		.catch(err => {
+			dashboardRows = [];
+			dashboardPagination = {};
 			tbody.innerHTML = `<tr><td colspan="9" class="text-center text-danger py-3">Failed to load data: ${err.message}</td></tr>`;
 			updatePagination({ page: 1, per_page: 0, total: 0, total_pages: 1, has_prev: false, has_next: false, is_all: false });
 			console.error(err);
@@ -600,7 +675,7 @@ if (notificationSelect) {
 	notificationFilter = notificationSelect.value || 'all';
 	notificationSelect.addEventListener('change', () => {
 		notificationFilter = notificationSelect.value || 'all';
-		loadData(monthPicker.value, 1);
+		applyLocalFiltersToMonitor();
 	});
 }
 if (partNumberSelect) {
@@ -614,7 +689,7 @@ if (partNumberSelect) {
 		}
 
 		selectedPartNumber = partNumberSelect.value || '';
-		loadData(monthPicker.value, 1);
+		applyLocalFiltersToMonitor();
 	});
 }
 
@@ -625,7 +700,7 @@ if (typeof window.jQuery !== 'undefined') {
 		}
 
 		selectedPartNumber = this.value || '';
-		loadData(monthPicker.value, 1);
+		applyLocalFiltersToMonitor();
 	});
 }
 
@@ -640,7 +715,7 @@ document.getElementById('paginationNav').addEventListener('click', event => {
 		return;
 	}
 
-	loadData(monthPicker.value, targetPage);
+	loadData(monthPicker.value, targetPage, { showLoading: false });
 });
 document.querySelector('#tblMonitor tbody').addEventListener('click', event => {
 	const button = event.target.closest('.btn-chart-toggle');
@@ -651,7 +726,9 @@ document.querySelector('#tblMonitor tbody').addEventListener('click', event => {
 	loadUsageChart(
 		monthPicker.value,
 		decodeURIComponent(String(button.dataset.partNumber ?? '')),
-		decodeURIComponent(String(button.dataset.description ?? '-'))
+		decodeURIComponent(String(button.dataset.description ?? '-')),
+		Number(decodeURIComponent(String(button.dataset.quotaQty ?? '0'))),
+		Number(decodeURIComponent(String(button.dataset.uptodateUsage ?? '0')))
 	);
 });
 document.addEventListener('visibilitychange', () => {

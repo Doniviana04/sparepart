@@ -218,6 +218,9 @@
     <a href="<?= base_url('crp') ?>" class="sidebar-link">
       <i class="bi bi-clipboard-data-fill"></i> CRP Dashboard
     </a>
+    <a href="<?= base_url('history-admin') ?>" class="sidebar-link">
+      <i class="bi bi-clock-history"></i> History Admin
+    </a>
     <?php endif; ?>
 
     <div class="nav-section">Monitor</div>
@@ -301,6 +304,23 @@
         </p>
         <div class="d-flex align-items-center gap-1 text-primary fw-semibold small">
           Buka Dashboard <i class="bi bi-arrow-right-short fs-5"></i>
+        </div>
+      </a>
+    </div>
+
+    <div class="col-md-6 col-lg-4">
+      <a href="<?= base_url('history-admin') ?>" class="menu-card card card-crp p-4">
+        <div class="d-flex align-items-center gap-3 mb-3">
+          <div class="card-icon text-primary"><i class="bi bi-clock-history"></i></div>
+          <div>
+            <h6 class="fw-bold mb-0">History Admin</h6>
+          </div>
+        </div>
+        <p class="text-muted small mb-3">
+          Lihat rekap history monitoring mingguan per bulan untuk evaluasi pemakaian dan perbandingan total qty.
+        </p>
+        <div class="d-flex align-items-center gap-1 text-primary fw-semibold small">
+          Buka History <i class="bi bi-arrow-right-short fs-5"></i>
         </div>
       </a>
     </div>

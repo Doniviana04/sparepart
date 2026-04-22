@@ -17,7 +17,7 @@ class MonitorUserController extends BaseController
 	 */
 	public function __construct()
 	{
-		$this->crpApi = new CrpApiService();
+		$this->crpApi = \Config\Services::crpApiService();
 	}
 
 	/**
@@ -275,6 +275,26 @@ class MonitorUserController extends BaseController
 	 */
 	private function resolveMonthFromAdjustmentRow(array $row): ?int
 	{
+		// API ADJ_DATE kadang tidak valid, jadi prioritaskan tanggal request
+		// API yang sudah ditempel pada _source_tanggal oleh service.
+		$sourceTanggal = trim((string) ($row['_source_tanggal'] ?? ''));
+		if ($sourceTanggal !== '') {
+			if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $sourceTanggal, $matches) === 1) {
+				$month = (int) $matches[2];
+				if ($month >= 1 && $month <= 12) {
+					return $month;
+				}
+			}
+
+			$timestamp = strtotime($sourceTanggal);
+			if ($timestamp !== false) {
+				$month = (int) date('n', $timestamp);
+				if ($month >= 1 && $month <= 12) {
+					return $month;
+				}
+			}
+		}
+
 		foreach (['MONTH', 'MON', 'BULAN', 'MM'] as $monthField) {
 			if (isset($row[$monthField]) && is_numeric($row[$monthField])) {
 				$month = (int) $row[$monthField];

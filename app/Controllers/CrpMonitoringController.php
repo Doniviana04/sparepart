@@ -16,7 +16,7 @@ class CrpMonitoringController extends BaseController
      */
     public function __construct()
     {
-        $this->crpApi = new CrpApiService();
+        $this->crpApi = \Config\Services::crpApiService();
     }
 
     /**

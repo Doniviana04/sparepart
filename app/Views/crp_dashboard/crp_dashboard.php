@@ -303,7 +303,7 @@ const SUMMARY_CHART_API_URL = '<?= base_url('crp/chart-summary-amount') ?>';
 const EXPORT_URL = '<?= base_url('crp/export-excel') ?>';
 const CONTROL_URL = '<?= base_url('crp/control') ?>';
 const CONTROL_UPDATE_EVENT_KEY = 'crp-control-updated';
-const AUTO_REFRESH_INTERVAL_MS = 120000;
+const AUTO_REFRESH_INTERVAL_MS = 1800000; //30 menit
 let autoRefreshTimer = null;
 let currentPage = 1;
 let pageSize = '100';
@@ -312,8 +312,12 @@ let usageQuotaChart = null;
 let summaryAmountChart = null;
 let activeChartPartNumber = '';
 let activeChartMonth = '';
+let usageChartCache = new Map();
 let isSyncingColumnFilters = false;
 let lastSummaryMonth = '';
+let cachedRows = [];
+let cachedMonth = '';
+let cachedYear = new Date().getFullYear();
 const columnFilterKeys = ['part_number', 'description', 'usage_qty', 'ach_persen', 'variance_amount'];
 const optionalDataLabelsPlugin = (typeof ChartDataLabels !== 'undefined') ? [ChartDataLabels] : [];
 
@@ -448,7 +452,7 @@ function resetAllColumnFilters() {
 
   isSyncingColumnFilters = false;
 
-  loadData(monthPicker.value, 1);
+  applyClientSideView(1);
 }
 
 function updateYearHeaders(year) {
@@ -629,15 +633,43 @@ function renderUsageQuotaChart(payload) {
   });
 }
 
+function buildLoadingUsagePayload(month, partNumber) {
+  const labels = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Des'];
+  const actualMonthly = Array.from({ length: 12 }, () => null);
+  const actualCumulative = Array.from({ length: 12 }, () => null);
+
+  return {
+    status: 'loading',
+    part_number: partNumber,
+    year: Number(String(month).split('-')[0] ?? new Date().getFullYear()),
+    labels,
+    actual_usage: actualCumulative,
+    actual_monthly: actualMonthly,
+    max_quota: Array.from({ length: 12 }, () => null),
+    max_quota_val: null,
+  };
+}
+
+function getUsageChartCacheKey(month, partNumber) {
+  return `${String(month).trim()}::${String(partNumber).trim()}`;
+}
+
 function loadUsageChart(month) {
   if (!activeChartPartNumber || !month) {
     return;
   }
 
-  const requestedPartNumber = activeChartPartNumber;
+  const requestedPartNumber = String(activeChartPartNumber).trim();
   const requestedMonth = month;
+  const cacheKey = getUsageChartCacheKey(requestedMonth, requestedPartNumber);
+  const url = `${CHART_API_URL}?month=${encodeURIComponent(requestedMonth)}&part_number=${encodeURIComponent(requestedPartNumber)}&_t=${Date.now()}`;
 
-  fetch(`${CHART_API_URL}?month=${encodeURIComponent(requestedMonth)}&part_number=${encodeURIComponent(requestedPartNumber)}`)
+  const cachedPayload = usageChartCache.get(cacheKey);
+  if (cachedPayload) {
+    renderUsageQuotaChart(cachedPayload);
+  }
+
+  fetch(url, { cache: 'no-store' })
     .then(r => {
       if (!r.ok) {
         throw new Error(`HTTP ${r.status}`);
@@ -648,13 +680,22 @@ function loadUsageChart(month) {
       if (requestedPartNumber !== activeChartPartNumber || requestedMonth !== activeChartMonth) {
         return;
       }
+
+      usageChartCache.set(cacheKey, json);
       renderUsageQuotaChart(json);
     })
     .catch(err => {
       console.error(err);
       const summary = document.getElementById('chartSummary');
+
+      if (!cachedPayload) {
+        renderUsageQuotaChart(buildLoadingUsagePayload(requestedMonth, requestedPartNumber));
+      }
+
       if (summary) {
-        summary.textContent = `Gagal memuat grafik: ${err.message}`;
+        summary.textContent = cachedPayload
+          ? `Menampilkan data real terakhir (cache). Gagal refresh: ${err.message}`
+          : `Gagal memuat data aktual: ${requestedPartNumber} | ${err.message}`;
       }
     });
 }
@@ -886,16 +927,21 @@ function openUsageChart(month, partNumber, description = '-') {
     graphModal.show();
   }
 
+  renderUsageQuotaChart(buildLoadingUsagePayload(month, partNumber));
+
   loadUsageChart(month);
 }
 
 function renderGraphButton(row) {
+  const partNumber = String(row.PART_NUMBER ?? '').trim();
+  const description = String(row.DESCRIPTION ?? '-');
+
   return `
     <button
       type="button"
       class="btn btn-sm btn-outline-primary btn-graph-toggle"
-      data-part-number="${encodeURIComponent(String(row.PART_NUMBER ?? ''))}"
-      data-description="${encodeURIComponent(String(row.DESCRIPTION ?? '-'))}"
+      data-part-number="${escapeHtml(partNumber)}"
+      data-description="${escapeHtml(description)}"
       title="Lihat grafik penggunaan"
       aria-label="Lihat grafik penggunaan"
     >
@@ -973,6 +1019,11 @@ function updateControlStatus(button) {
       return r.json();
     })
     .then(json => {
+      const rowData = cachedRows.find(row => String(row.PART_NUMBER ?? '') === partNumber);
+      if (rowData) {
+        rowData.CONTROLLED = Boolean(json.controlled);
+      }
+
       applyControlState(button, Boolean(json.controlled));
 
       // Trigger sinkronisasi lintas-tab (mis. tab monitor user) tanpa refresh manual.
@@ -982,6 +1033,10 @@ function updateControlStatus(button) {
         controlled: Boolean(json.controlled),
         timestamp: Date.now(),
       }));
+
+      if (controlMode === 'controlled') {
+        applyClientSideView(1);
+      }
     })
     .catch(err => {
       applyControlState(button, previousControlled);
@@ -1071,7 +1126,164 @@ function renderPaginationNav(page, totalPages, hasPrev, hasNext, isAll) {
   nav.innerHTML = buttons.join('');
 }
 
-function loadData(month, page = 1) {
+function getRowVarianceAmount(row, year) {
+  const rowVariance = Number(row.VARIANCE_AMOUNT);
+  if (Number.isFinite(rowVariance)) {
+    return rowVariance;
+  }
+
+  const prevAmount = Number(row['AMOUNT_' + (year - 1)] ?? 0);
+  const currentAmount = Number(row.ACH_AMOUNT ?? 0);
+  return prevAmount - currentAmount;
+}
+
+function buildFilterOptionsFromRows(rows, year) {
+  const optionMap = {
+    part_number: new Map(),
+    description: new Map(),
+    usage_qty: new Map(),
+    ach_persen: new Map(),
+  };
+
+  rows.forEach(row => {
+    const partNumber = String(row.PART_NUMBER ?? '').trim();
+    if (partNumber && !optionMap.part_number.has(partNumber)) {
+      optionMap.part_number.set(partNumber, { value: partNumber, label: partNumber });
+    }
+
+    const description = String(row.DESCRIPTION ?? '').trim();
+    if (description && !optionMap.description.has(description)) {
+      optionMap.description.set(description, { value: description, label: description });
+    }
+
+    const usageQtyRaw = row['USAGE_QTY_' + (year - 1)];
+    if (usageQtyRaw !== null && usageQtyRaw !== undefined && usageQtyRaw !== '') {
+      const usageQty = String(usageQtyRaw);
+      if (!optionMap.usage_qty.has(usageQty)) {
+        optionMap.usage_qty.set(usageQty, { value: usageQty, label: formatFilterOptionLabel('usage_qty', usageQtyRaw) });
+      }
+    }
+
+    const achPersenRaw = row.ACH_PERSEN;
+    if (achPersenRaw !== null && achPersenRaw !== undefined && achPersenRaw !== '') {
+      const achPersen = String(achPersenRaw);
+      if (!optionMap.ach_persen.has(achPersen)) {
+        optionMap.ach_persen.set(achPersen, { value: achPersen, label: formatFilterOptionLabel('ach_persen', achPersenRaw) });
+      }
+    }
+  });
+
+  return {
+    part_number: Array.from(optionMap.part_number.values()),
+    description: Array.from(optionMap.description.values()),
+    usage_qty: Array.from(optionMap.usage_qty.values()),
+    ach_persen: Array.from(optionMap.ach_persen.values()),
+  };
+}
+
+function getClientFilteredRows() {
+  const activeFilters = getActiveColumnFilters();
+  const baseRows = controlMode === 'controlled'
+    ? cachedRows.filter(row => Boolean(row.CONTROLLED))
+    : cachedRows;
+
+  return baseRows.filter(row => {
+    return Object.entries(activeFilters).every(([key, value]) => {
+      if (!value) {
+        return true;
+      }
+
+      if (key === 'variance_amount') {
+        const varianceAmount = getRowVarianceAmount(row, cachedYear);
+        if (value === 'positive') {
+          return varianceAmount > 0;
+        }
+
+        if (value === 'negative') {
+          return varianceAmount < 0;
+        }
+
+        return true;
+      }
+
+      if (key === 'part_number') {
+        return String(row.PART_NUMBER ?? '') === value;
+      }
+
+      if (key === 'description') {
+        return String(row.DESCRIPTION ?? '') === value;
+      }
+
+      if (key === 'usage_qty') {
+        return String(row['USAGE_QTY_' + (cachedYear - 1)] ?? '') === value;
+      }
+
+      if (key === 'ach_persen') {
+        return String(row.ACH_PERSEN ?? '') === value;
+      }
+
+      return true;
+    });
+  });
+}
+
+function renderRows(rows, year) {
+  const tbody = document.querySelector('#tblCrp tbody');
+  if (!tbody) {
+    return;
+  }
+
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="11" class="text-center text-muted py-3">No data available</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(d => {
+    const varianceAmount = getRowVarianceAmount(d, year);
+
+    return `
+    <tr class="${d.CONTROLLED ? 'row-controlled' : ''}">
+      <td class="text-center">${d.NO}</td>
+      <td>${d.PART_NUMBER ?? '-'}</td>
+      <td>${d.DESCRIPTION ?? '-'}</td>
+      <td class="text-end">${formatNumber(d['USAGE_QTY_' + (year - 1)])}</td>
+      <td class="text-end">${formatNumber(d['AMOUNT_' + (year - 1)])}</td>
+      <td class="text-end">${formatNumber(d.TARGET_5PCT)}</td>
+      <td class="text-end">${formatNumber(d.ACH_AMOUNT)}</td>
+      <td class="text-center">${d.ACH_PERSEN ?? '-'}</td>
+      <td class="text-end fw-semibold">${formatNumber(varianceAmount)}</td>
+      <td class="text-center">${renderGraphButton(d)}</td>
+      <td class="text-center">${renderActionButton(d)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function applyClientSideView(page = 1) {
+  const rows = getClientFilteredRows();
+  const isAll = pageSize === 'all';
+  const total = rows.length;
+  const perPage = isAll ? (total || 1) : Math.max(1, Number(pageSize) || 1);
+  const totalPages = isAll ? 1 : Math.max(1, Math.ceil(total / perPage));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const startIndex = (safePage - 1) * perPage;
+  const visibleRows = isAll ? rows : rows.slice(startIndex, startIndex + perPage);
+
+  syncPartSelector(rows);
+  renderRows(visibleRows, cachedYear);
+  updatePagination({
+    page: safePage,
+    per_page: isAll ? total : perPage,
+    total,
+    total_pages: totalPages,
+    has_prev: safePage > 1,
+    has_next: safePage < totalPages,
+    is_all: isAll,
+  });
+}
+
+function loadData(month, page = 1, options = {}) {
+  const forceFetch = Boolean(options.forceFetch);
+  const shouldFetch = forceFetch || cachedMonth !== month || cachedRows.length === 0;
   const selectedYear = parseInt(month.split('-')[0], 10);
   if (!Number.isNaN(selectedYear)) {
     updateYearHeaders(selectedYear);
@@ -1079,19 +1291,19 @@ function loadData(month, page = 1) {
 
   updateExportLink(month);
 
+  if (!shouldFetch) {
+    applyClientSideView(page);
+    return;
+  }
+
   const tbody = document.querySelector('#tblCrp tbody');
   tbody.innerHTML = '<tr><td colspan="11" class="text-center py-3"><span class="spinner-border spinner-border-sm me-2"></span>Loading data...  </td></tr>';
 
-  const activeFilters = getActiveColumnFilters();
   const queryParams = new URLSearchParams({
     month,
-    page,
-    limit: pageSize,
-    control_mode: controlMode,
-  });
-
-  Object.entries(activeFilters).forEach(([key, value]) => {
-    queryParams.set(`filter_${key}`, value);
+    page: '1',
+    limit: 'all',
+    control_mode: 'all',
   });
 
   fetch(`${API_URL}?${queryParams.toString()}`)
@@ -1100,46 +1312,21 @@ function loadData(month, page = 1) {
       return r.json();
     })
     .then(json => {
-      const rows = json.data ?? [];
-      const meta = json.pagination ?? {};
+      const rows = Array.isArray(json.data) ? json.data : [];
       const year = parseInt(json.year ?? month.split('-')[0]);
-      controlMode = String(json.control_mode ?? controlMode);
-      updateYearHeaders(year);
-      syncColumnFilters(json.filters ?? {});
-      updatePagination(meta);
+      cachedRows = rows;
+      cachedMonth = month;
+      cachedYear = Number.isNaN(year) ? selectedYear : year;
 
-      syncPartSelector(rows);
-      loadUsageChart(month);
+      updateYearHeaders(cachedYear);
+      syncColumnFilters(buildFilterOptionsFromRows(cachedRows, cachedYear));
+
       if (lastSummaryMonth !== month) {
         loadSummaryAmountChart(month);
         lastSummaryMonth = month;
       }
 
-      if (rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="11" class="text-center text-muted py-3">No data available</td></tr>';
-        return;
-      }
-
-      tbody.innerHTML = rows.map(d => {
-        const prevAmount = Number(d['AMOUNT_' + (year - 1)] ?? 0);
-        const currentAmount = Number(d.ACH_AMOUNT ?? 0);
-        const varianceAmount = prevAmount - currentAmount;
-
-        return `
-        <tr class="${d.CONTROLLED ? 'row-controlled' : ''}">
-          <td class="text-center">${d.NO}</td>
-          <td>${d.PART_NUMBER ?? '-'}</td>
-          <td>${d.DESCRIPTION ?? '-'}</td>
-          <td class="text-end">${formatNumber(d['USAGE_QTY_' + (year - 1)])}</td>
-          <td class="text-end">${formatNumber(d['AMOUNT_' + (year - 1)])}</td>
-          <td class="text-end">${formatNumber(d.TARGET_5PCT)}</td>
-          <td class="text-end">${formatNumber(d.ACH_AMOUNT)}</td>
-          <td class="text-center">${d.ACH_PERSEN ?? '-'}</td>
-          <td class="text-end fw-semibold">${formatNumber(d.VARIANCE_AMOUNT ?? varianceAmount)}</td>
-          <td class="text-center">${renderGraphButton(d)}</td>
-          <td class="text-center">${renderActionButton(d)}</td>
-        </tr>`;
-      }).join('');
+      applyClientSideView(page);
     })
     .catch(err => {
       tbody.innerHTML = `<tr><td colspan="11" class="text-center text-danger py-3">Failed to load data: ${err.message}</td></tr>`;
@@ -1160,7 +1347,7 @@ showLimit.addEventListener('change', () => {
     pageSize = showLimit.value;
   }
 
-  loadData(monthPicker.value, 1);
+  applyClientSideView(1);
 });
 document.addEventListener('change', event => {
   const filter = event.target.closest('.column-filter[data-filter-key]');
@@ -1173,7 +1360,7 @@ document.addEventListener('change', event => {
     return;
   }
 
-  loadData(monthPicker.value, 1);
+  applyClientSideView(1);
 });
 
 if (typeof window.jQuery !== 'undefined') {
@@ -1182,7 +1369,7 @@ if (typeof window.jQuery !== 'undefined') {
       return;
     }
 
-    loadData(monthPicker.value, 1);
+    applyClientSideView(1);
   });
 }
 document.getElementById('filterResetBtn').addEventListener('click', resetAllColumnFilters);
@@ -1197,15 +1384,15 @@ document.getElementById('paginationNav').addEventListener('click', event => {
     return;
   }
 
-  loadData(monthPicker.value, targetPage);
+  applyClientSideView(targetPage);
 });
 document.querySelector('#tblCrp tbody').addEventListener('click', event => {
   const chartButton = event.target.closest('.btn-graph-toggle');
   if (chartButton) {
     openUsageChart(
       monthPicker.value,
-      decodeURIComponent(String(chartButton.dataset.partNumber ?? '')),
-      decodeURIComponent(String(chartButton.dataset.description ?? '-'))
+      String(chartButton.dataset.partNumber ?? '').trim(),
+      String(chartButton.dataset.description ?? '-').trim()
     );
     return;
   }
@@ -1223,39 +1410,24 @@ function refreshFromCurrentSelection() {
     return;
   }
 
-  loadData(monthPicker.value, currentPage);
+  loadData(monthPicker.value, currentPage, { forceFetch: true });
 }
 
 function setupAutoRefresh() {
+  // Auto refresh dimatikan: reload data hanya melalui aksi manual user.
   if (autoRefreshTimer !== null) {
     clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
   }
-
-  autoRefreshTimer = window.setInterval(() => {
-    if (!document.hidden) {
-      refreshFromCurrentSelection();
-    }
-  }, AUTO_REFRESH_INTERVAL_MS);
 }
 
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) {
-    refreshFromCurrentSelection();
-  }
-});
-
-window.addEventListener('storage', event => {
-  if (event.key === CONTROL_UPDATE_EVENT_KEY && event.newValue) {
-    refreshFromCurrentSelection();
-  }
-});
+// Auto refresh saat tab aktif kembali dan sinkron lintas-tab dinonaktifkan di halaman ini.
 
 window.addEventListener('load', () => {
   initColumnFiltersSelect2();
   loadData(monthPicker.value, 1);
   /* Hitung offset setelah browser render header */
   requestAnimationFrame(fixStickyHeaderOffsets);
-  setupAutoRefresh();
 });
 </script>
 

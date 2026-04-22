@@ -22,7 +22,15 @@ $routes->group('crp', ['namespace' => 'App\Controllers', 'filter' => ['role:1,2,
     $routes->get('chart-usage',  'CrpController::getUsageChartData');
     $routes->get('chart-summary-amount', 'CrpController::getSummaryAmountChartData');
     $routes->get('export-excel', 'CrpController::exportExcel'); // GET /crp/export-excel
+    $routes->get('debug-adjustments', 'CrpController::debugAdjustments'); // GET /crp/debug-adjustments?month=2026-03&item=PART_NUMBER
+    $routes->get('debug-part-qty', 'CrpController::debugPartQty'); // GET /crp/debug-part-qty?month=2026-04&part_number=PART&warehouse=KWSPT
     $routes->post('control',     'CrpController::setControlStatus');
+});
+
+// ── History Admin (akses sama seperti CRP dashboard) ──
+$routes->group('history-admin', ['namespace' => 'App\Controllers', 'filter' => ['role:1,2,3,4,5,6', 'crpaccess']], function ($routes) {
+    $routes->get('/', 'HistoryAdmController::index');
+    $routes->get('data', 'HistoryAdmController::getData');
 });
 
 // ── Monitor User (level 1-7) ──

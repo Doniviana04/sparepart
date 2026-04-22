@@ -23,7 +23,7 @@ class CrpController extends BaseController
      */
     public function __construct()
     {
-        $this->crpApi = new CrpApiService();
+        $this->crpApi = \Config\Services::crpApiService();
     }
 
     /**
@@ -91,51 +91,17 @@ class CrpController extends BaseController
         @set_time_limit(300);
 
         [$year, $month] = $this->resolvePeriod();
-        $prevYear = $year - 1;
         $partNumber = $this->normalizePartNumber((string) ($this->request->getGet('part_number') ?? ''));
 
         if ($partNumber === '') {
             return $this->failValidationErrors('Parameter part_number wajib diisi.');
         }
 
-        $quotaRows = $this->crpApi->getAdjustmentsByYearUntilMonth($prevYear, 12);
-        $actualRows = $this->crpApi->getAdjustmentsByYearUntilMonth($year, $month);
-
-        $maxQuota = 0.0;
-        foreach ($quotaRows as $row) {
-            $warehouse = strtoupper(trim((string) ($row['WAREHOUSE'] ?? '')));
-            if ($warehouse !== 'KWSPT') {
-                continue;
-            }
-
-            $item = $this->normalizePartNumber((string) ($row['ITEM'] ?? ''));
-            if ($item !== $partNumber) {
-                continue;
-            }
-
-            $maxQuota += abs((float) ($row['QTY_ADJ'] ?? 0));
-        }
-
-        $monthlyUsage = array_fill(1, 12, 0.0);
-        foreach ($actualRows as $row) {
-            $warehouse = strtoupper(trim((string) ($row['WAREHOUSE'] ?? '')));
-            if ($warehouse !== 'KWSPT') {
-                continue;
-            }
-
-            $item = $this->normalizePartNumber((string) ($row['ITEM'] ?? ''));
-            if ($item !== $partNumber) {
-                continue;
-            }
-
-            $monthFromRow = $this->resolveMonthFromAdjustmentRow($row);
-            // Fallback ke bulan filter agar actual tidak hilang saat API tidak kirim tanggal yang konsisten.
-            if ($monthFromRow === null) {
-                $monthFromRow = $month;
-            }
-
-            $monthlyUsage[$monthFromRow] += abs((float) ($row['QTY_ADJ'] ?? 0));
-        }
+        $snapshot = $this->getUsageChartSnapshot($year, $month);
+        $maxQuota = (float) ($snapshot['quota'][$partNumber] ?? 0);
+        $monthlyUsage = $snapshot['monthly'][$partNumber] ?? array_fill(1, 12, 0.0);
+        $quotaMatchedRows = (int) ($snapshot['quota_rows'][$partNumber] ?? 0);
+        $actualMatchedRows = (int) ($snapshot['actual_rows'][$partNumber] ?? 0);
 
         $labels = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Des'];
         $actualCumulative = [];
@@ -155,6 +121,14 @@ class CrpController extends BaseController
 
         $maxQuotaLine = array_fill(0, 12, round($maxQuota, 2));
 
+        log_message('debug', 'CRP chart-usage part={part} period={period} matched_quota_rows={quotaRows} matched_actual_rows={actualRows} max_quota={maxQuota}', [
+            'part' => $partNumber,
+            'period' => sprintf('%04d-%02d', $year, $month),
+            'quotaRows' => $quotaMatchedRows,
+            'actualRows' => $actualMatchedRows,
+            'maxQuota' => round($maxQuota, 2),
+        ]);
+
         return $this->respond([
             'status'        => 'success',
             'part_number'   => $partNumber,
@@ -164,7 +138,97 @@ class CrpController extends BaseController
             'actual_monthly' => $actualMonthly,
             'max_quota'     => $maxQuotaLine,
             'max_quota_val' => round($maxQuota, 2),
-        ]);
+            'snapshot_cached' => (bool) ($snapshot['cached'] ?? false),
+        ])
+            // Pastikan browser/proxy tidak menyajikan response chart lama untuk part lain.
+            ->setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+            ->setHeader('Pragma', 'no-cache')
+            ->setHeader('Expires', '0');
+    }
+
+    /**
+     * Snapshot agregasi usage chart per periode (tahun-bulan).
+     * Tujuan: endpoint chart cepat saat user klik banyak part number.
+     */
+    private function getUsageChartSnapshot(int $year, int $month): array
+    {
+        $cacheKey = sprintf('crp_usage_snapshot_%04d_%02d', $year, $month);
+        $cache = \Config\Services::cache();
+        $cached = $cache->get($cacheKey);
+
+        if (is_array($cached)
+            && isset($cached['quota'], $cached['monthly'], $cached['quota_rows'], $cached['actual_rows'])
+            && is_array($cached['quota'])
+            && is_array($cached['monthly'])
+        ) {
+            $cached['cached'] = true;
+            return $cached;
+        }
+
+        $prevYear = $year - 1;
+        $quotaRows = $this->crpApi->getAdjustmentsByYearUntilMonth($prevYear, 12);
+        $actualRows = $this->crpApi->getAdjustmentsByYearUntilMonth($year, $month);
+
+        $quotaByPart = [];
+        $quotaRowsByPart = [];
+        foreach ($quotaRows as $row) {
+            $warehouse = strtoupper(trim((string) ($row['WAREHOUSE'] ?? '')));
+            if ($warehouse !== 'KWSPT') {
+                continue;
+            }
+
+            $part = $this->resolvePartNumberFromAdjustmentRow($row);
+            if ($part === '') {
+                continue;
+            }
+
+            $quotaByPart[$part] = (float) ($quotaByPart[$part] ?? 0) + abs((float) ($row['QTY_ADJ'] ?? 0));
+            $quotaRowsByPart[$part] = (int) ($quotaRowsByPart[$part] ?? 0) + 1;
+        }
+
+        $monthlyByPart = [];
+        $actualRowsByPart = [];
+        foreach ($actualRows as $row) {
+            $warehouse = strtoupper(trim((string) ($row['WAREHOUSE'] ?? '')));
+            if ($warehouse !== 'KWSPT') {
+                continue;
+            }
+
+            $part = $this->resolvePartNumberFromAdjustmentRow($row);
+            if ($part === '') {
+                continue;
+            }
+
+            $periodInfo = $this->resolvePeriodFromAdjustmentRow($row, $year);
+            if ($periodInfo === null || (int) ($periodInfo['year'] ?? 0) !== $year) {
+                continue;
+            }
+
+            $monthFromRow = (int) ($periodInfo['month'] ?? 0);
+            if ($monthFromRow < 1 || $monthFromRow > 12) {
+                continue;
+            }
+
+            if (!isset($monthlyByPart[$part])) {
+                $monthlyByPart[$part] = array_fill(1, 12, 0.0);
+            }
+
+            $monthlyByPart[$part][$monthFromRow] += abs((float) ($row['QTY_ADJ'] ?? 0));
+            $actualRowsByPart[$part] = (int) ($actualRowsByPart[$part] ?? 0) + 1;
+        }
+
+        $snapshot = [
+            'quota' => $quotaByPart,
+            'monthly' => $monthlyByPart,
+            'quota_rows' => $quotaRowsByPart,
+            'actual_rows' => $actualRowsByPart,
+            'cached' => false,
+            'generated_at' => date('Y-m-d H:i:s'),
+        ];
+
+        $cache->save($cacheKey, $snapshot, 300);
+
+        return $snapshot;
     }
 
     /**
@@ -428,79 +492,6 @@ class CrpController extends BaseController
                 ->setStatusCode(500)
                 ->setBody('Gagal export Excel. Silakan coba lagi saat koneksi API CRP stabil.');
         }
-    }
-
-    /**
-     * GET /crp/debug-adjustments?month=2026-03&item=PART_NUMBER
-     * Endpoint debug untuk cek kenapa ACH_AMOUNT/PERSEN tidak muncul
-     */
-    public function debugAdjustments()
-    {
-        [$year, $month] = $this->resolvePeriod();
-        $itemFilter = strtoupper(trim((string) ($this->request->getGet('item') ?? '')));
-
-        $adjustmentsCurr = $this->crpApi->getAdjustmentsByYearUntilMonth($year, $month);
-
-        $kwsptRecords = 0;
-        $nonKwsptRecords = 0;
-        $allItems = [];
-        $kwsptItems = [];
-        $nonKwsptSamples = [];
-        $itemMatches = [];
-
-        foreach ($adjustmentsCurr as $adj) {
-            $item = strtoupper(trim((string) ($adj['ITEM'] ?? '')));
-            $warehouse = strtoupper(trim((string) ($adj['WAREHOUSE'] ?? '')));
-
-            if ($item !== '') {
-                $allItems[$item] = true;
-            }
-
-            if ($warehouse === 'KWSPT') {
-                $kwsptRecords++;
-                if ($item !== '') {
-                    $kwsptItems[$item] = true;
-                }
-            } else {
-                $nonKwsptRecords++;
-                if (count($nonKwsptSamples) < 20) {
-                    $nonKwsptSamples[] = [
-                        'ITEM'      => $adj['ITEM'] ?? null,
-                        'WAREHOUSE' => $adj['WAREHOUSE'] ?? null,
-                        'QTY_ADJ'   => $adj['QTY_ADJ'] ?? null,
-                        'PRICE'     => $adj['PRICE'] ?? null,
-                    ];
-                }
-            }
-
-            if ($itemFilter !== '' && $item === $itemFilter) {
-                $itemMatches[] = [
-                    'ITEM'      => $adj['ITEM'] ?? null,
-                    'WAREHOUSE' => $adj['WAREHOUSE'] ?? null,
-                    'QTY_ADJ'   => $adj['QTY_ADJ'] ?? null,
-                    'PRICE'     => $adj['PRICE'] ?? null,
-                    'DATE'      => $adj['DATE'] ?? null,
-                ];
-            }
-        }
-
-        return $this->respond([
-            'status' => 'success',
-            'period' => sprintf('%04d-%02d', $year, $month),
-            'summary' => [
-                'curr_total_records'       => count($adjustmentsCurr),
-                'curr_kwspt_records'       => $kwsptRecords,
-                'curr_non_kwspt_records'   => $nonKwsptRecords,
-                'curr_distinct_items'      => count($allItems),
-                'curr_distinct_kwspt_items'=> count($kwsptItems),
-                'item_filter'              => $itemFilter !== '' ? $itemFilter : null,
-                'item_filter_found'        => $itemFilter !== '' ? count($itemMatches) > 0 : null,
-            ],
-            'item_filter_records' => $itemMatches,
-            'sample_non_kwspt'    => $nonKwsptSamples,
-            'sample_all_items'    => array_slice(array_keys($allItems), 0, 100),
-            'sample_kwspt_items'  => array_slice(array_keys($kwsptItems), 0, 100),
-        ]);
     }
 
     /**
@@ -1024,6 +1015,25 @@ class CrpController extends BaseController
      */
     private function resolveMonthFromAdjustmentRow(array $row): ?int
     {
+        // API ADJ_DATE kadang tidak valid; prioritaskan tanggal request dari service.
+        $sourceTanggal = trim((string) ($row['_source_tanggal'] ?? $row['_SOURCE_TANGGAL'] ?? ''));
+        if ($sourceTanggal !== '') {
+            if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $sourceTanggal, $matches) === 1) {
+                $month = (int) $matches[2];
+                if ($month >= 1 && $month <= 12) {
+                    return $month;
+                }
+            }
+
+            $timestamp = strtotime($sourceTanggal);
+            if ($timestamp !== false) {
+                $month = (int) date('n', $timestamp);
+                if ($month >= 1 && $month <= 12) {
+                    return $month;
+                }
+            }
+        }
+
         foreach (['MONTH', 'MON', 'BULAN', 'MM'] as $monthField) {
             if (isset($row[$monthField]) && is_numeric($row[$monthField])) {
                 $month = (int) $row[$monthField];
@@ -1033,7 +1043,7 @@ class CrpController extends BaseController
             }
         }
 
-        foreach (['DATE', 'TRANS_DATE', 'DOC_DATE', 'TANGGAL', 'ADJ_DATE', 'POSTING_DATE', 'DATE_ADJ', 'TRX_DATE', 'CREATE_DATE'] as $dateField) {
+        foreach (['_SOURCE_TANGGAL', '_source_tanggal', 'DATE', 'TRANS_DATE', 'DOC_DATE', 'TANGGAL', 'ADJ_DATE', 'POSTING_DATE', 'DATE_ADJ', 'TRX_DATE', 'CREATE_DATE'] as $dateField) {
             $dateValue = trim((string) ($row[$dateField] ?? ''));
             if ($dateValue === '') {
                 continue;
@@ -1064,6 +1074,64 @@ class CrpController extends BaseController
             if ($month >= 1 && $month <= 12) {
                 return $month;
             }
+        }
+
+        return null;
+    }
+
+    /**
+     * Resolve periode transaksi dari baris adjustment.
+     * Disamakan dengan History Admin agar agregasi qty konsisten antar halaman.
+     */
+    private function resolvePeriodFromAdjustmentRow(array $row, int $defaultYear): ?array
+    {
+        $sourceTanggal = trim((string) ($row['_source_tanggal'] ?? $row['_SOURCE_TANGGAL'] ?? ''));
+        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $sourceTanggal, $matches) === 1) {
+            return [
+                'year' => (int) $matches[1],
+                'month' => (int) $matches[2],
+                'day' => (int) $matches[3],
+            ];
+        }
+
+        foreach (['DATE', 'TRANS_DATE', 'DOC_DATE', 'TANGGAL', 'ADJ_DATE', 'POSTING_DATE', 'DATE_ADJ', 'TRX_DATE', 'CREATE_DATE'] as $field) {
+            $value = trim((string) ($row[$field] ?? ''));
+            if ($value === '') {
+                continue;
+            }
+
+            $timestamp = strtotime($value);
+            if ($timestamp === false) {
+                continue;
+            }
+
+            return [
+                'year' => (int) date('Y', $timestamp),
+                'month' => (int) date('n', $timestamp),
+                'day' => (int) date('j', $timestamp),
+            ];
+        }
+
+        foreach (['MONTH', 'MON', 'BULAN', 'MM'] as $monthField) {
+            if (!isset($row[$monthField]) || !is_numeric($row[$monthField])) {
+                continue;
+            }
+
+            $month = (int) $row[$monthField];
+            if ($month < 1 || $month > 12) {
+                continue;
+            }
+
+            $day = 1;
+            if (isset($row['DAY']) && is_numeric($row['DAY'])) {
+                $day = max(1, min(31, (int) $row['DAY']));
+            }
+
+            return [
+                'year' => $defaultYear,
+                'month' => $month,
+                'day' => $day,
+            ];
         }
 
         return null;
@@ -1167,6 +1235,21 @@ class CrpController extends BaseController
     }
 
     /**
+     * Ambil part number dari beberapa kemungkinan nama field API.
+     */
+    private function resolvePartNumberFromAdjustmentRow(array $row): string
+    {
+        foreach (['ITEM', 'PART_NUMBER', 'PART_NO', 'PARTNUMBER', 'ITEM_NO', 'MATERIAL'] as $field) {
+            $candidate = $this->normalizePartNumber((string) ($row[$field] ?? ''));
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        return '';
+    }
+
+    /**
      * Menormalkan teks agar aman di-encode ke JSON (UTF-8 valid).
      */
     private function normalizeUtf8Text(string $text): string
@@ -1200,5 +1283,161 @@ class CrpController extends BaseController
     }
 
     // Route export Excel bisa ditambahkan nanti (gunakan library seperti PhpSpreadsheet)
+/**
+     * GET /crp/debug-adjustments?month=2026-03&item=PART_NUMBER
+     * Endpoint debug untuk cek kenapa ACH_AMOUNT/PERSEN tidak muncul
+     */
+    public function debugAdjustments()
+    {
+        [$year, $month] = $this->resolvePeriod();
+        $itemFilter = strtoupper(trim((string) ($this->request->getGet('item') ?? '')));
+
+        $adjustmentsCurr = $this->crpApi->getAdjustmentsByYearUntilMonth($year, $month);
+
+        $kwsptRecords = 0;
+        $nonKwsptRecords = 0;
+        $allItems = [];
+        $kwsptItems = [];
+        $nonKwsptSamples = [];
+        $itemMatches = [];
+
+        foreach ($adjustmentsCurr as $adj) {
+            $item = strtoupper(trim((string) ($adj['ITEM'] ?? '')));
+            $warehouse = strtoupper(trim((string) ($adj['WAREHOUSE'] ?? '')));
+
+            if ($item !== '') {
+                $allItems[$item] = true;
+            }
+
+            if ($warehouse === 'KWSPT') {
+                $kwsptRecords++;
+                if ($item !== '') {
+                    $kwsptItems[$item] = true;
+                }
+            } else {
+                $nonKwsptRecords++;
+                if (count($nonKwsptSamples) < 20) {
+                    $nonKwsptSamples[] = [
+                        'ITEM'      => $adj['ITEM'] ?? null,
+                        'WAREHOUSE' => $adj['WAREHOUSE'] ?? null,
+                        'QTY_ADJ'   => $adj['QTY_ADJ'] ?? null,
+                        'PRICE'     => $adj['PRICE'] ?? null,
+                    ];
+                }
+            }
+
+            if ($itemFilter !== '' && $item === $itemFilter) {
+                $itemMatches[] = [
+                    'ITEM'      => $adj['ITEM'] ?? null,
+                    'WAREHOUSE' => $adj['WAREHOUSE'] ?? null,
+                    'QTY_ADJ'   => $adj['QTY_ADJ'] ?? null,
+                    'PRICE'     => $adj['PRICE'] ?? null,
+                    'DATE'      => $adj['DATE'] ?? null,
+                ];
+            }
+        }
+
+        return $this->respond([
+            'status' => 'success',
+            'period' => sprintf('%04d-%02d', $year, $month),
+            'summary' => [
+                'curr_total_records'       => count($adjustmentsCurr),
+                'curr_kwspt_records'       => $kwsptRecords,
+                'curr_non_kwspt_records'   => $nonKwsptRecords,
+                'curr_distinct_items'      => count($allItems),
+                'curr_distinct_kwspt_items'=> count($kwsptItems),
+                'item_filter'              => $itemFilter !== '' ? $itemFilter : null,
+                'item_filter_found'        => $itemFilter !== '' ? count($itemMatches) > 0 : null,
+            ],
+            'item_filter_records' => $itemMatches,
+            'sample_non_kwspt'    => $nonKwsptSamples,
+            'sample_all_items'    => array_slice(array_keys($allItems), 0, 100),
+            'sample_kwspt_items'  => array_slice(array_keys($kwsptItems), 0, 100),
+        ]);
+    }
+
+    /**
+     * GET /crp/debug-part-qty?month=2026-04&part_number=PART&warehouse=KWSPT
+     * Endpoint debug untuk cek quantity data per part & warehouse
+     */
+    public function debugPartQty()
+    {
+        [$year, $month] = $this->resolvePeriod();
+        $partNumber = $this->normalizePartNumber((string) ($this->request->getGet('part_number') ?? ''));
+        $warehouse = strtoupper(trim((string) ($this->request->getGet('warehouse') ?? '')));
+
+        if ($partNumber === '') {
+            return $this->failValidationErrors('Parameter part_number wajib diisi.');
+        }
+
+        if ($warehouse === '') {
+            return $this->failValidationErrors('Parameter warehouse wajib diisi.');
+        }
+
+        try {
+            $adjustmentsCurr = $this->crpApi->getAdjustmentsByYearUntilMonth($year, $month);
+            $adjustmentsPrev = $this->crpApi->getAdjustmentsByYearUntilMonth($year - 1, $month);
+
+            // Filter untuk part & warehouse tertentu
+            $currMatches = array_filter($adjustmentsCurr, function ($adj) use ($partNumber, $warehouse) {
+                return strtoupper(trim((string) ($adj['ITEM'] ?? ''))) === $partNumber
+                    && strtoupper(trim((string) ($adj['WAREHOUSE'] ?? ''))) === $warehouse;
+            });
+
+            $prevMatches = array_filter($adjustmentsPrev, function ($adj) use ($partNumber, $warehouse) {
+                return strtoupper(trim((string) ($adj['ITEM'] ?? ''))) === $partNumber
+                    && strtoupper(trim((string) ($adj['WAREHOUSE'] ?? ''))) === $warehouse;
+            });
+
+            // Hitung aggregate
+            $currTotal = 0;
+            $currPrice = 0;
+            foreach ($currMatches as $adj) {
+                $currTotal += (float) ($adj['QTY_ADJ'] ?? 0);
+                $currPrice = (float) ($adj['PRICE'] ?? 0);
+            }
+
+            $prevTotal = 0;
+            $prevPrice = 0;
+            foreach ($prevMatches as $adj) {
+                $prevTotal += (float) ($adj['QTY_ADJ'] ?? 0);
+                $prevPrice = (float) ($adj['PRICE'] ?? 0);
+            }
+
+            return $this->respond([
+                'status' => 'success',
+                'period' => sprintf('%04d-%02d', $year, $month),
+                'part_number' => $partNumber,
+                'warehouse' => $warehouse,
+                'current_year' => [
+                    'year' => $year,
+                    'total_qty' => $currTotal,
+                    'price' => $currPrice,
+                    'record_count' => count($currMatches),
+                    'sample_records' => array_slice(array_values($currMatches), 0, 10),
+                ],
+                'previous_year' => [
+                    'year' => $year - 1,
+                    'total_qty' => $prevTotal,
+                    'price' => $prevPrice,
+                    'record_count' => count($prevMatches),
+                    'sample_records' => array_slice(array_values($prevMatches), 0, 10),
+                ],
+                'variance' => [
+                    'qty_diff' => $currTotal - $prevTotal,
+                    'qty_persen' => $prevTotal != 0 ? (($currTotal - $prevTotal) / $prevTotal * 100) : 0,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'Debug part-qty gagal ({period}/{part}/{warehouse}): {message}', [
+                'period'    => sprintf('%04d-%02d', $year, $month),
+                'part'      => $partNumber,
+                'warehouse' => $warehouse,
+                'message'   => $e->getMessage(),
+            ]);
+
+            return $this->fail('Debug part-qty gagal: ' . $e->getMessage(), 500);
+        }
+    }
     
 }
