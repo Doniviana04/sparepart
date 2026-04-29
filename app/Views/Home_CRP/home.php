@@ -188,12 +188,22 @@
 
 <?php
   $jabatan      = (int) (session()->get('kode_jabatan') ?? session()->get('level') ?? 0);
-  $name         = session()->get('name') ?? 'User';
-  $username     = session()->get('username') ?? '';
+  $rawName      = session()->get('name');
+  $rawUsername  = session()->get('username');
+  $name         = is_scalar($rawName) ? (string) $rawName : 'User';
+  $username     = is_scalar($rawUsername) ? (string) $rawUsername : '';
   $hasCrpAccess = (bool) (session()->get('can_access_crp') ?? false);
-  $displayRole  = trim((string) (session()->get('jabatan') ?? ''));
+  $rawRole      = session()->get('jabatan');
+  $displayRole  = trim(is_scalar($rawRole) ? (string) $rawRole : '');
+  $rawFlashInfo = session()->getFlashdata('info');
+  $rawFlashErr  = session()->getFlashdata('error');
+  $flashInfo    = is_scalar($rawFlashInfo) ? (string) $rawFlashInfo : null;
+  $flashError   = is_scalar($rawFlashErr) ? (string) $rawFlashErr : null;
   if ($displayRole === '') {
     $displayRole = 'Pengguna';
+  }
+  if ($name === '') {
+    $name = 'User';
   }
 ?>
 
@@ -219,7 +229,7 @@
       <i class="bi bi-clipboard-data-fill"></i> CRP Dashboard
     </a>
     <a href="<?= base_url('history-admin') ?>" class="sidebar-link">
-      <i class="bi bi-clock-history"></i> History Admin
+      <i class="bi bi-clock-history"></i> History CRP Sparepart
     </a>
     <?php endif; ?>
 
@@ -269,18 +279,18 @@
   </div>
 
   <!-- Info Flash -->
-  <?php if (session()->getFlashdata('info')): ?>
+  <?php if ($flashInfo !== null && $flashInfo !== ''): ?>
     <div class="alert alert-info alert-dismissible fade show mb-3" role="alert">
       <i class="bi bi-info-circle-fill me-1"></i>
-      <?= esc(session()->getFlashdata('info')) ?>
+      <?= esc($flashInfo) ?>
       <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
   <?php endif; ?>
 
-  <?php if (session()->getFlashdata('error')): ?>
+  <?php if ($flashError !== null && $flashError !== ''): ?>
     <div class="alert alert-danger alert-dismissible fade show mb-3" role="alert">
       <i class="bi bi-exclamation-triangle-fill me-1"></i>
-      <?= esc(session()->getFlashdata('error')) ?>
+      <?= esc($flashError) ?>
       <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
   <?php endif; ?>
@@ -313,7 +323,7 @@
         <div class="d-flex align-items-center gap-3 mb-3">
           <div class="card-icon text-primary"><i class="bi bi-clock-history"></i></div>
           <div>
-            <h6 class="fw-bold mb-0">History Admin</h6>
+            <h6 class="fw-bold mb-0">History CRP Sparepart</h6>
           </div>
         </div>
         <p class="text-muted small mb-3">
@@ -344,25 +354,6 @@
         </div>
       </a>
     </div>
-
-    <?php if (!$hasCrpAccess): ?>
-    <!-- Placeholder CRP – kode_jabatan 7, tampil abu-abu -->
-    <div class="col-md-6 col-lg-4">
-      <div class="menu-card card card-crp card-disabled p-4">
-        <div class="d-flex align-items-center gap-3 mb-3">
-          <div class="card-icon text-secondary"><i class="bi bi-clipboard-data-fill"></i></div>
-          <div>
-            <h6 class="fw-bold mb-0">CRP Dashboard</h6>
-            <span class="badge bg-secondary role-badge">Jabatan 7 Tidak Diizinkan</span>
-          </div>
-        </div>
-        <p class="text-muted small mb-3">Halaman ini hanya dapat diakses oleh user jabatan 1 sampai 6.</p>
-        <div class="d-flex align-items-center gap-1 text-secondary fw-semibold small">
-          <i class="bi bi-lock-fill me-1"></i> Akses Terbatas
-        </div>
-      </div>
-    </div>
-    <?php endif; ?>
 
   </div>
 </main>

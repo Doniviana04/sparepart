@@ -124,6 +124,7 @@ class HistoryAdmController extends BaseController
 
             $unitPrice = $this->resolveFinalPrice($partNumber, $masterMap, 0);
             $description = $this->resolveFinalDescription($partNumber, $masterMap, $partApiDescriptions[$partNumber] ?? '-');
+            $prevYearAmount = $prevYearTotal * $unitPrice;
 
             $weekTotals = [];
             foreach ($weeklyRanges as $range) {
@@ -134,9 +135,7 @@ class HistoryAdmController extends BaseController
                 $weekTotals[] = round($weekTotal, 2);
             }
 
-            $crAchievement = $beforeQty > 0
-                ? (($totalQty - $beforeQty) / $beforeQty) * 100
-                : ($totalQty > 0 ? 100.0 : 0.0);
+            $crValue = ($avgMonthly - $totalQty) * $unitPrice;
 
             $rows[] = [
                 'no' => $no++,
@@ -149,9 +148,31 @@ class HistoryAdmController extends BaseController
                 'total_qty' => round($totalQty, 2),
                 'after_qty' => round($totalQty, 2),
                 'before_qty' => round($beforeQty, 2),
-                'cr_achievement' => round($crAchievement, 2),
+                'prev_year_amount' => round($prevYearAmount, 2),
+                'cr_value' => round($crValue, 2),
             ];
             }
+
+            $filters = $this->resolveFilters();
+            $filterOptions = $this->buildFilterOptions($rows);
+            $filteredRows = $this->applyFilters($rows, $filters);
+            $summary = $this->buildSummaryMetrics(
+                $filteredRows,
+                $currentRows,
+                $prevYearRows,
+                $masterMap,
+                $filters,
+                $year,
+                $month
+            );
+
+            foreach ($filteredRows as $index => &$item) {
+                $item['no'] = $index + 1;
+            }
+            unset($item);
+
+            $pagination = $this->resolvePagination();
+            $pagedData = $this->paginateRows($filteredRows, $pagination['page'], $pagination['per_page'], $pagination['is_all']);
 
             $payload = [
                 'status' => 'success',
@@ -165,7 +186,11 @@ class HistoryAdmController extends BaseController
                     'before_month' => $beforeMonth,
                 ],
                 'weeks' => $weeklyRanges,
-                'rows' => $rows,
+                'rows' => $pagedData['data'],
+                'pagination' => $pagedData['meta'],
+                'filters' => $filters,
+                'filter_options' => $filterOptions,
+                'summary' => $summary,
             ];
 
             return $this->respond($this->sanitizePayloadUtf8($payload));
@@ -176,6 +201,257 @@ class HistoryAdmController extends BaseController
 
             return $this->failServerError('Gagal mengambil data history admin.');
         }
+    }
+
+    /**
+     * Ambil parameter pagination dari query string.
+     */
+    private function resolvePagination(): array
+    {
+        $rawLimit = $this->request->getGet('limit');
+        $page = (int) ($this->request->getGet('page') ?? 1);
+        $isAll = is_string($rawLimit) && strtolower(trim($rawLimit)) === 'all';
+        $perPage = (int) ($rawLimit ?? 100);
+
+        $page = max(1, $page);
+
+        if ($isAll) {
+            return [
+                'page' => 1,
+                'per_page' => null,
+                'is_all' => true,
+            ];
+        }
+
+        $allowedPerPage = [50, 100, 200];
+        if (!in_array($perPage, $allowedPerPage, true)) {
+            $perPage = 100;
+        }
+
+        return [
+            'page' => $page,
+            'per_page' => $perPage,
+            'is_all' => false,
+        ];
+    }
+
+    /**
+     * Ambil filter part number dan description dari query string.
+     */
+    private function resolveFilters(): array
+    {
+        $partNumber = $this->normalizePartNumber((string) ($this->request->getGet('part_number') ?? ''));
+        $description = $this->normalizeUtf8Text(trim((string) ($this->request->getGet('description') ?? '')));
+
+        return [
+            'part_number' => $partNumber,
+            'description' => $description,
+        ];
+    }
+
+    /**
+     * Buat daftar opsi filter dari data hasil olahan bulan terpilih.
+     */
+    private function buildFilterOptions(array $rows): array
+    {
+        $partNumberMap = [];
+        $descriptionMap = [];
+
+        foreach ($rows as $row) {
+            $partNumber = $this->normalizePartNumber((string) ($row['part_number'] ?? ''));
+            if ($partNumber !== '') {
+                $partNumberMap[$partNumber] = $partNumber;
+            }
+
+            $description = $this->normalizeUtf8Text(trim((string) ($row['description'] ?? '')));
+            if ($description !== '' && $description !== '-') {
+                $descriptionMap[$description] = $description;
+            }
+        }
+
+        $partNumbers = array_values($partNumberMap);
+        $descriptions = array_values($descriptionMap);
+
+        sort($partNumbers);
+        natcasesort($descriptions);
+
+        return [
+            'part_numbers' => array_values($partNumbers),
+            'descriptions' => array_values($descriptions),
+        ];
+    }
+
+    /**
+     * Terapkan filter exact match untuk part number dan description.
+     */
+    private function applyFilters(array $rows, array $filters): array
+    {
+        $partNumberFilter = $this->normalizePartNumber((string) ($filters['part_number'] ?? ''));
+        $descriptionFilter = $this->normalizeTextKey((string) ($filters['description'] ?? ''));
+
+        if ($partNumberFilter === '' && $descriptionFilter === '') {
+            return $rows;
+        }
+
+        return array_values(array_filter($rows, function (array $row) use ($partNumberFilter, $descriptionFilter): bool {
+            if ($partNumberFilter !== '') {
+                $rowPartNumber = $this->normalizePartNumber((string) ($row['part_number'] ?? ''));
+                if ($rowPartNumber !== $partNumberFilter) {
+                    return false;
+                }
+            }
+
+            if ($descriptionFilter !== '') {
+                $rowDescription = $this->normalizeTextKey((string) ($row['description'] ?? ''));
+                if ($rowDescription !== $descriptionFilter) {
+                    return false;
+                }
+            }
+
+            return true;
+        }));
+    }
+
+    /**
+     * Potong data sesuai halaman yang diminta dan siapkan metadata pagination.
+     */
+    private function paginateRows(array $rows, int $page, ?int $perPage, bool $isAll = false): array
+    {
+        $total = count($rows);
+
+        if ($isAll || $perPage === null) {
+            return [
+                'data' => array_values($rows),
+                'meta' => [
+                    'page' => 1,
+                    'per_page' => $total,
+                    'total' => $total,
+                    'total_pages' => 1,
+                    'has_prev' => false,
+                    'has_next' => false,
+                    'is_all' => true,
+                ],
+            ];
+        }
+
+        $totalPages = max(1, (int) ceil($total / $perPage));
+        $currentPage = min($page, $totalPages);
+        $offset = ($currentPage - 1) * $perPage;
+
+        return [
+            'data' => array_values(array_slice($rows, $offset, $perPage)),
+            'meta' => [
+                'page' => $currentPage,
+                'per_page' => $perPage,
+                'total' => $total,
+                'total_pages' => $totalPages,
+                'has_prev' => $currentPage > 1,
+                'has_next' => $currentPage < $totalPages,
+                'is_all' => false,
+            ],
+        ];
+    }
+
+    /**
+     * Ringkasan agregat untuk tabel summary di halaman History Admin.
+     */
+    private function buildSummaryMetrics(
+        array $detailRows,
+        array $currentRows,
+        array $prevYearRows,
+        array $masterMap,
+        array $filters,
+        int $year,
+        int $month
+    ): array
+    {
+        $targetAccumulation = 0.0;
+        foreach ($detailRows as $row) {
+            $targetAccumulation += (float) ($row['target_max_qty'] ?? 0);
+        }
+
+        $partFilter = $this->normalizePartNumber((string) ($filters['part_number'] ?? ''));
+        $descriptionFilter = $this->normalizeTextKey((string) ($filters['description'] ?? ''));
+
+        $prevYearTotalByPart = [];
+        foreach ($prevYearRows as $row) {
+            if (!$this->isRelevantWarehouse($row)) {
+                continue;
+            }
+
+            if (!$this->rowMatchesSummaryFilters($row, $partFilter, $descriptionFilter)) {
+                continue;
+            }
+
+            $partNumber = $this->resolvePartNumberFromAdjustmentRow($row);
+            if ($partNumber === '') {
+                continue;
+            }
+
+            $prevYearTotalByPart[$partNumber] = ($prevYearTotalByPart[$partNumber] ?? 0) + abs((float) ($row['QTY_ADJ'] ?? 0));
+        }
+
+        $monthlyUsageByMonth = [];
+        foreach ($currentRows as $row) {
+            if (!$this->isRelevantWarehouse($row)) {
+                continue;
+            }
+
+            if (!$this->rowMatchesSummaryFilters($row, $partFilter, $descriptionFilter)) {
+                continue;
+            }
+
+            $periodInfo = $this->resolvePeriodFromAdjustmentRow($row, $year);
+            if ($periodInfo === null || $periodInfo['year'] !== $year || $periodInfo['month'] > $month) {
+                continue;
+            }
+
+            $partNumber = $this->resolvePartNumberFromAdjustmentRow($row);
+            if ($partNumber === '') {
+                continue;
+            }
+
+            $monthIndex = (int) $periodInfo['month'];
+            if (!isset($monthlyUsageByMonth[$monthIndex])) {
+                $monthlyUsageByMonth[$monthIndex] = [];
+            }
+
+            $monthlyUsageByMonth[$monthIndex][$partNumber] = ($monthlyUsageByMonth[$monthIndex][$partNumber] ?? 0) + abs((float) ($row['QTY_ADJ'] ?? 0));
+        }
+
+        $monthlyAchievementByMonth = [];
+        for ($monthIndex = 1; $monthIndex <= $month; $monthIndex++) {
+            $monthlyAchievement = 0.0;
+            $usageByPart = $monthlyUsageByMonth[$monthIndex] ?? [];
+
+            foreach ($usageByPart as $partNumber => $totalQty) {
+                $prevYearTotal = (float) ($prevYearTotalByPart[$partNumber] ?? 0);
+                if ($prevYearTotal <= 0) {
+                    continue;
+                }
+
+                $avgMonthly = $prevYearTotal / 12;
+                $unitPrice = $this->resolveFinalPrice($partNumber, $masterMap, 0);
+                $prevYearAmount = $prevYearTotal * $unitPrice;
+                $monthlyAchievement += ($avgMonthly - (float) $totalQty) * $unitPrice;
+            }
+
+            $monthlyAchievementByMonth[$monthIndex] = $monthlyAchievement;
+        }
+
+        $monthlyAchievement = (float) ($monthlyAchievementByMonth[$month] ?? 0);
+        $achievementAccumulation = 0.0;
+        for ($monthIndex = 1; $monthIndex <= $month; $monthIndex++) {
+            $achievementAccumulation += (float) ($monthlyAchievementByMonth[$monthIndex] ?? 0);
+        }
+
+        return [
+            'month' => sprintf('%04d-%02d', $year, $month),
+            'month_label' => strtoupper(date('F Y', strtotime(sprintf('%04d-%02d-01', $year, $month)))),
+            'target_accumulation' => round($targetAccumulation, 2),
+            'monthly_achievement' => round($monthlyAchievement, 2),
+            'achievement_accumulation' => round($achievementAccumulation, 2),
+        ];
     }
 
     private function resolvePeriod(): array
@@ -240,6 +516,30 @@ class HistoryAdmController extends BaseController
     private function normalizePartNumber(string $partNumber): string
     {
         return strtoupper(trim($partNumber));
+    }
+
+    private function normalizeTextKey(string $value): string
+    {
+        return strtolower($this->normalizeUtf8Text(trim($value)));
+    }
+
+    private function rowMatchesSummaryFilters(array $row, string $partNumberFilter, string $descriptionFilter): bool
+    {
+        if ($partNumberFilter !== '') {
+            $rowPartNumber = $this->normalizePartNumber($this->resolvePartNumberFromAdjustmentRow($row));
+            if ($rowPartNumber !== $partNumberFilter) {
+                return false;
+            }
+        }
+
+        if ($descriptionFilter !== '') {
+            $rowDescription = $this->normalizeTextKey($this->resolveDescription($row));
+            if ($rowDescription !== $descriptionFilter) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function resolvePartNumberFromAdjustmentRow(array $row): string

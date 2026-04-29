@@ -303,7 +303,9 @@ const SUMMARY_CHART_API_URL = '<?= base_url('crp/chart-summary-amount') ?>';
 const EXPORT_URL = '<?= base_url('crp/export-excel') ?>';
 const CONTROL_URL = '<?= base_url('crp/control') ?>';
 const CONTROL_UPDATE_EVENT_KEY = 'crp-control-updated';
-const AUTO_REFRESH_INTERVAL_MS = 1800000; //30 menit
+// Interval auto refresh dashboard: 3 jam (3 * 60 * 60 * 1000 = 10800000 milliseconds)
+const AUTO_REFRESH_INTERVAL_MS = 10800000;
+// Timer untuk menyimpan ID dari setInterval agar dapat dibatalkan jika diperlukan
 let autoRefreshTimer = null;
 let currentPage = 1;
 let pageSize = '100';
@@ -1414,20 +1416,39 @@ function refreshFromCurrentSelection() {
 }
 
 function setupAutoRefresh() {
-  // Auto refresh dimatikan: reload data hanya melalui aksi manual user.
+  // Hentikan timer auto refresh yang sudah berjalan sebelumnya (jika ada)
   if (autoRefreshTimer !== null) {
     clearInterval(autoRefreshTimer);
     autoRefreshTimer = null;
   }
+  
+  // Mulai interval auto refresh dengan periode 3 jam
+  // Setiap 3 jam, dashboard akan secara otomatis me-reload data terbaru dari server
+  autoRefreshTimer = setInterval(() => {
+    // Ambil bulan yang dipilih user
+    const currentMonth = monthPicker.value;
+    
+    // Jika ada bulan yang dipilih, refresh data dengan flag forceFetch untuk force reload dari server
+    if (currentMonth) {
+      console.log(`[Auto Refresh] Refreshing dashboard data at ${new Date().toLocaleString('id-ID')}`);
+      loadData(currentMonth, currentPage, { forceFetch: true });
+    }
+  }, AUTO_REFRESH_INTERVAL_MS);
+  
+  // Log ke console untuk memastikan auto refresh sudah aktif
+  console.log(`[Dashboard] Auto refresh aktivitas diperlukan setiap ${AUTO_REFRESH_INTERVAL_MS / 1000 / 60 / 60} jam`);
 }
 
-// Auto refresh saat tab aktif kembali dan sinkron lintas-tab dinonaktifkan di halaman ini.
+// Auto refresh akan berjalan otomatis setiap 3 jam untuk memastikan data dashboard selalu up-to-date
 
 window.addEventListener('load', () => {
   initColumnFiltersSelect2();
   loadData(monthPicker.value, 1);
   /* Hitung offset setelah browser render header */
   requestAnimationFrame(fixStickyHeaderOffsets);
+  
+  // Aktifkan auto refresh dashboard setiap 3 jam
+  setupAutoRefresh();
 });
 </script>
 
